@@ -32,14 +32,6 @@ namespace Decompiler {
         std::string sectionName;
     };
 
-    struct CodeZone {
-        std::string name;
-        uint64_t fileOffset = 0;
-        uint64_t size = 0;
-        uint64_t entryPointFileOffset = 0;
-        uint64_t entryPointAddress = 0;
-    };
-
     struct COFFSymbolInfo {
         std::string name;
         uint32_t value = 0;
@@ -50,10 +42,10 @@ namespace Decompiler {
 
     struct DecompileContext {
         std::vector<SectionInfo> sections;
-        std::vector<CodeZone> codeZones;
         std::vector<COFFSymbolInfo> coffSymbols;
         const std::vector<uint8_t>* rawData = nullptr;
-        bool onlyMainReachable = false;
+        uint64_t entryPointAddress = 0;
+        bool onlyEntryPointReachable = false;
         BinaryFormat format = BinaryFormat::Unknown;
         BinarySubformat subformat = BinarySubformat::Unknown;
     };

@@ -4,6 +4,7 @@
 #include <charconv>
 #include <cctype>
 #include <cstdint>
+#include <iterator>
 #include <string>
 #include <optional>
 #include <utility>
@@ -296,6 +297,17 @@ namespace Decompiler {
                    functionName.starts_with("__tmainCRTStartup");
         }
 
+        bool isUserEntryPointName(const std::string& functionName) {
+            return functionName == "main" ||
+                   functionName == "_main" ||
+                   functionName == "wmain" ||
+                   functionName == "_wmain" ||
+                   functionName == "WinMain" ||
+                   functionName == "_WinMain" ||
+                   functionName == "wWinMain" ||
+                   functionName == "_wWinMain";
+        }
+
         std::vector<std::string> decompileFunctionBody(
             const DecompilerFunction& function,
             const std::unordered_map<uint64_t, std::string>& functionNames) {
@@ -359,12 +371,32 @@ namespace Decompiler {
             return returnType + " " + function.name + "(" + params + ") {";
         }
 
-        std::vector<DecompilerFunction> filterMainReachableFunctions(const std::vector<DecompilerFunction>& functions) {
-            const auto mainIt = std::ranges::find_if(functions, [](const DecompilerFunction& function) {
-                return function.name == "main";
-            });
-            if (mainIt == functions.end()) {
+        std::vector<DecompilerFunction> filterEntryPointReachableFunctions(
+            const std::vector<DecompilerFunction>& functions,
+            const uint64_t entryPointAddress) {
+            if (entryPointAddress == 0) {
                 return functions;
+            }
+
+            auto entryIt = functions.end();
+            for (auto it = functions.begin(); it != functions.end(); ++it) {
+                const auto next = std::next(it);
+                if (entryPointAddress >= it->start_address && (next == functions.end() || entryPointAddress < next->start_address)) {
+                    entryIt = it;
+                    break;
+                }
+            }
+            if (entryIt == functions.end()) {
+                return functions;
+            }
+
+            if (isRuntimeReachabilityStop(entryIt->name)) {
+                const auto userEntryIt = std::ranges::find_if(functions, [](const DecompilerFunction& function) {
+                    return isUserEntryPointName(function.name);
+                });
+                if (userEntryIt != functions.end()) {
+                    entryIt = userEntryIt;
+                }
             }
 
             std::unordered_map<uint64_t, const DecompilerFunction*> functionByAddress;
@@ -373,7 +405,7 @@ namespace Decompiler {
                 functionByAddress.emplace(function.start_address, &function);
             }
 
-            std::vector<uint64_t> worklist{ mainIt->start_address };
+            std::vector<uint64_t> worklist{ entryIt->start_address };
             std::unordered_set<uint64_t> reachable;
             reachable.reserve(functions.size());
 
@@ -387,7 +419,7 @@ namespace Decompiler {
                 if (functionIt == functionByAddress.end()) {
                     continue;
                 }
-                if (address != mainIt->start_address && isRuntimeReachabilityStop(functionIt->second->name)) {
+                if (address != entryIt->start_address && isRuntimeReachabilityStop(functionIt->second->name)) {
                     continue;
                 }
 
@@ -428,7 +460,7 @@ namespace Decompiler {
         ASTDetail::setGlobalMemoryRegions(globalRegions, globalSymbols);
 
         const auto functionNames = functionNamesByAddress(functions);
-        const auto selectedFunctions = context.onlyMainReachable ? filterMainReachableFunctions(functions) : functions;
+        const auto selectedFunctions = context.onlyEntryPointReachable ? filterEntryPointReachableFunctions(functions, context.entryPointAddress) : functions;
         std::vector<std::string> result;
 
         for (size_t i = 0; i < selectedFunctions.size(); ++i) {
