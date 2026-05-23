@@ -46,6 +46,9 @@ namespace
         if ((op == "*" || op == "/") && expressionNeedsParensForMultiplicative(expression)) {
             return "(" + expression + ")";
         }
+        if ((op == ">>" || op == "<<") && expressionNeedsParensForMultiplicative(expression)) {
+            return "(" + expression + ")";
+        }
         return expression;
     }
 

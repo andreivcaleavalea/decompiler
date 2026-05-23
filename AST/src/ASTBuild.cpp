@@ -460,6 +460,40 @@ std::vector<std::unique_ptr<ASTNode>> build_ast(
                 break;
             }
 
+            const bool has_loop_context = isValidBlockId(cfg, continue_target) || isValidBlockId(cfg, break_target);
+            const bool s0_is_break      = s0 == break_target && isValidBlockId(cfg, break_target);
+            const bool s1_is_break      = s1 == break_target && isValidBlockId(cfg, break_target);
+            const bool s0_is_continue   = s0 == continue_target && isValidBlockId(cfg, continue_target);
+            const bool s1_is_continue   = s1 == continue_target && isValidBlockId(cfg, continue_target);
+            const bool s0_is_boundary   = s0_is_break || s0_is_continue;
+            const bool s1_is_boundary   = s1_is_break || s1_is_continue;
+            if (has_loop_context && s0_is_boundary != s1_is_boundary) {
+                auto if_node            = std::make_unique<IfNode>();
+                if_node->condition_expr = *condition;
+
+                size_t next_block = s1;
+                if (s1_is_boundary) {
+                    if_node->condition_expr = ASTDetail::invertConditionExpr(if_node->condition_expr);
+                    next_block              = s0;
+                }
+
+                if (s0_is_break || s1_is_break) {
+                    if_node->true_branch.push_back(std::make_unique<BreakNode>());
+                } else {
+                    if_node->true_branch.push_back(std::make_unique<ContinueNode>());
+                }
+
+                if (!instrs.empty()) {
+                    auto seq         = std::make_unique<SimpleBlockNode>();
+                    seq->block_index = curr;
+                    seq->statements  = lowerBlockToStatements(instrs, calling_convention);
+                    ast.push_back(std::move(seq));
+                }
+                ast.push_back(std::move(if_node));
+                curr = next_block;
+                continue;
+            }
+
             auto if_node            = std::make_unique<IfNode>();
             if_node->condition_expr = *condition;
 
@@ -485,7 +519,6 @@ std::vector<std::unique_ptr<ASTNode>> build_ast(
                 }
             }
 
-            const bool has_loop_context      = isValidBlockId(cfg, continue_target) || isValidBlockId(cfg, break_target);
             const bool true_reenters_header  = branchReentersHeader(cfg, true_block, curr, merge_block);
             const bool false_reenters_header = false_block != merge_block && branchReentersHeader(cfg, false_block, curr, merge_block);
             const bool true_reaches_loop_boundary =

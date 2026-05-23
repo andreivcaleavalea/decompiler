@@ -8,7 +8,7 @@
 #include <map>
 #include <optional>
 #include <set>
-#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace Decompiler
@@ -52,6 +52,101 @@ namespace
             predecessors.push_back(from);
         }
     }
+
+    std::optional<size_t> targetIndexForAddress(const std::map<uint64_t, size_t>& addressToIndex, const uint64_t address)
+    {
+        const auto it = addressToIndex.lower_bound(address);
+        if (it == addressToIndex.end()) {
+            return std::nullopt;
+        }
+        return it->second;
+    }
+
+    bool isPassthroughBlock(const Graph& cfg, const size_t blockId)
+    {
+        if (blockId == 0 || !isValidBlockId(cfg, blockId)) {
+            return false;
+        }
+
+        const auto& block = cfg.blocks[blockId];
+        if (block.successors.size() != 1 || block.successors[0] == blockId) {
+            return false;
+        }
+
+        bool hasJump = false;
+        for (const auto& instruction : block.instructions) {
+            if (IRProperties::isNop(instruction)) {
+                continue;
+            }
+            if (instruction.type == IRType::JMP && !hasJump) {
+                hasJump = true;
+                continue;
+            }
+            return false;
+        }
+
+        return !block.instructions.empty();
+    }
+
+    size_t resolvePassthroughTarget(const Graph& cfg, size_t blockId)
+    {
+        std::set<size_t> visited;
+        while (isPassthroughBlock(cfg, blockId)) {
+            if (visited.contains(blockId)) {
+                return blockId;
+            }
+            visited.insert(blockId);
+            blockId = cfg.blocks[blockId].successors[0];
+        }
+        return blockId;
+    }
+
+    void normalizePassthroughBlocks(Graph& cfg)
+    {
+        std::vector<bool> removeBlock(cfg.blocks.size(), false);
+        bool hasBlocksToRemove = false;
+        for (size_t i = 0; i < cfg.blocks.size(); ++i) {
+            removeBlock[i]    = isPassthroughBlock(cfg, i);
+            hasBlocksToRemove = hasBlocksToRemove || removeBlock[i];
+        }
+        if (!hasBlocksToRemove) {
+            return;
+        }
+
+        std::vector<size_t> newBlockId(cfg.blocks.size(), InvalidBlockId);
+        Graph normalized;
+        normalized.blocks.reserve(cfg.blocks.size());
+
+        for (size_t i = 0; i < cfg.blocks.size(); ++i) {
+            if (removeBlock[i]) {
+                continue;
+            }
+
+            newBlockId[i]  = normalized.blocks.size();
+            InsBlock block = cfg.blocks[i];
+            block.index    = normalized.blocks.size();
+            block.predecessors.clear();
+            block.successors.clear();
+            normalized.blocks.push_back(std::move(block));
+        }
+
+        for (size_t i = 0; i < cfg.blocks.size(); ++i) {
+            if (removeBlock[i]) {
+                continue;
+            }
+
+            const size_t from = newBlockId[i];
+            for (const auto successor : cfg.blocks[i].successors) {
+                const size_t target = resolvePassthroughTarget(cfg, successor);
+                if (!isValidBlockId(cfg, target) || removeBlock[target]) {
+                    continue;
+                }
+                addEdge(normalized, from, newBlockId[target]);
+            }
+        }
+
+        cfg = std::move(normalized);
+    }
 } // namespace
 
 Graph buildCFG(const std::vector<IRInstruction>& instructions)
@@ -59,7 +154,7 @@ Graph buildCFG(const std::vector<IRInstruction>& instructions)
     if (instructions.empty())
         return {};
 
-    std::unordered_map<uint64_t, size_t> address_to_index;
+    std::map<uint64_t, size_t> address_to_index;
     for (size_t i = 0; i < instructions.size(); ++i) {
         address_to_index[instructions[i].address] = i;
     }
@@ -75,8 +170,8 @@ Graph buildCFG(const std::vector<IRInstruction>& instructions)
             }
             if (!IRProperties::isReturn(ins.type)) {
                 if (const auto address = parseJumpAddress(IRProperties::operandAt(ins, 0).value); address.has_value()) {
-                    if (address_to_index.contains(*address)) {
-                        indexes.insert(address_to_index[*address]);
+                    if (const auto targetIndex = targetIndexForAddress(address_to_index, *address); targetIndex.has_value()) {
+                        indexes.insert(*targetIndex);
                     }
                 }
             }
@@ -112,7 +207,7 @@ Graph buildCFG(const std::vector<IRInstruction>& instructions)
         cfg.blocks.push_back(block);
     }
 
-    std::unordered_map<uint64_t, size_t> address_to_block_index;
+    std::map<uint64_t, size_t> address_to_block_index;
     for (size_t i = 0; i < cfg.blocks.size(); ++i) {
         address_to_block_index[cfg.blocks[i].start_address] = i;
     }
@@ -127,9 +222,8 @@ Graph buildCFG(const std::vector<IRInstruction>& instructions)
 
         if (IRProperties::isJump(last_ins.type)) {
             if (const auto address = parseJumpAddress(IRProperties::operandAt(last_ins, 0).value); address.has_value()) {
-                if (address_to_block_index.contains(*address)) {
-                    const auto targetBlock = address_to_block_index[*address];
-                    addEdge(cfg, block.index, targetBlock);
+                if (const auto targetBlock = targetIndexForAddress(address_to_block_index, *address); targetBlock.has_value()) {
+                    addEdge(cfg, block.index, *targetBlock);
                 }
             }
         }
@@ -141,6 +235,7 @@ Graph buildCFG(const std::vector<IRInstruction>& instructions)
         }
     }
 
+    normalizePassthroughBlocks(cfg);
     return cfg;
 }
 

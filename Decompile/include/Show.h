@@ -5,7 +5,7 @@
 
 #include "Program.h"
 
-n amespace Decompiler
+namespace Decompiler
 {
-    std::vector<std::string> showFunctions(DecompilerProgram & program);
+std::vector<std::string> showFunctions(DecompilerProgram& program);
 }

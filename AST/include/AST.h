@@ -62,6 +62,15 @@ struct DoWhileNode : ASTNode {
     std::vector<std::string> print(int indent) const override;
 };
 
+struct ForNode : ASTNode {
+    std::string init_expr;
+    std::string condition_expr;
+    std::string increment_expr;
+    std::vector<std::unique_ptr<ASTNode>> body;
+
+    std::vector<std::string> print(int indent) const override;
+};
+
 struct BreakNode : ASTNode {
     std::vector<std::string> print(int indent) const override;
 };
@@ -69,6 +78,8 @@ struct BreakNode : ASTNode {
 struct ContinueNode : ASTNode {
     std::vector<std::string> print(int indent) const override;
 };
+
+void restructureForLoops(std::vector<std::unique_ptr<ASTNode>>& nodes);
 
 size_t find_merge_block(const Graph& cfg, size_t branch_true, size_t branch_false);
 bool reaches(const Graph& cfg, size_t start, size_t target, size_t exclude = static_cast<size_t>(-1));

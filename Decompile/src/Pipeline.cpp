@@ -87,5 +87,7 @@ void buildFunctionAST(DecompilerFunction& function)
           static_cast<size_t>(-1),
           static_cast<size_t>(-1),
           function.calling_convention);
+
+    restructureForLoops(function.ast);
 }
 } // namespace Decompiler

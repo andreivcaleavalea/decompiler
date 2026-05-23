@@ -166,6 +166,20 @@ std::vector<std::string> DoWhileNode::print(int indent) const
     return result;
 }
 
+std::vector<std::string> ForNode::print(int indent) const
+{
+    const std::string spaces(indent, ' ');
+    std::vector<std::string> result;
+    result.push_back(spaces + "for (" + init_expr + "; " + condition_expr + "; " + increment_expr + ") {");
+    for (const auto& node : body) {
+        for (const auto& line : node->print(indent + 4)) {
+            result.push_back(line);
+        }
+    }
+    result.push_back(spaces + "}");
+    return result;
+}
+
 std::vector<std::string> BreakNode::print(int indent) const
 {
     return { std::string(indent, ' ') + "break" };

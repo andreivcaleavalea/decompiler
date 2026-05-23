@@ -223,6 +223,12 @@ namespace
         if (mnemonic == "jae" || mnemonic == "jnb" || mnemonic == "jnc") {
             return ConditionCode::AE;
         }
+        if (mnemonic == "jns") {
+            return ConditionCode::GE;
+        }
+        if (mnemonic == "js") {
+            return ConditionCode::L;
+        }
         return ConditionCode::None;
     }
 
@@ -567,7 +573,7 @@ std::vector<IRInstruction> lift_sext(uint64_t address, const std::vector<std::st
     return { { "sext", IRType::SEXT, { parse_operand(operands[0]), parse_operand(operands[1]) }, address } };
 }
 
-std::vector<IRInstruction> lift_nop(uint64_t address, const std::vector<std::string>& operands)
+std::vector<IRInstruction> lift_nop([[maybe_unused]] uint64_t address, [[maybe_unused]] const std::vector<std::string>& operands)
 {
     return {};
 }
