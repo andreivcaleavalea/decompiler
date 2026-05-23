@@ -13,3 +13,7 @@ target_include_directories(DecompilerLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/IR/i
 target_include_directories(DecompilerLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/SSA/include)
 target_include_directories(DecompilerLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/Symbols/include)
 target_include_directories(DecompilerLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/Types/include)
+target_include_directories(DecompilerLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/Optimizations/include)
+target_include_directories(DecompilerLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/Variables/include)
+
+target_link_libraries(DecompilerLib PUBLIC LLVMDemangle)
