@@ -57,14 +57,110 @@ namespace
         return expression;
     }
 
-    std::string renderComparison(std::string lhs, const std::string& op, std::string rhs, const bool unsignedComparison)
+    enum class LoopBoundaryKind { None, Break, Continue };
+
+    struct LoopBoundaryBranch {
+        LoopBoundaryKind kind = LoopBoundaryKind::None;
+        size_t normal_block   = static_cast<size_t>(-1);
+        bool invert_condition = false;
+    };
+
+    ComparisonOp comparisonOpFromCondition(const ConditionCode condition)
+    {
+        switch (condition) {
+        case ConditionCode::E:
+            return ComparisonOp::Equal;
+        case ConditionCode::NE:
+            return ComparisonOp::NotEqual;
+        case ConditionCode::L:
+            return ComparisonOp::Less;
+        case ConditionCode::LE:
+            return ComparisonOp::LessEqual;
+        case ConditionCode::G:
+            return ComparisonOp::Greater;
+        case ConditionCode::GE:
+            return ComparisonOp::GreaterEqual;
+        case ConditionCode::B:
+            return ComparisonOp::UnsignedLess;
+        case ConditionCode::BE:
+            return ComparisonOp::UnsignedLessEqual;
+        case ConditionCode::A:
+            return ComparisonOp::UnsignedGreater;
+        case ConditionCode::AE:
+            return ComparisonOp::UnsignedGreaterEqual;
+        case ConditionCode::None:
+            return ComparisonOp::Equal;
+        }
+        return ComparisonOp::Equal;
+    }
+
+    std::unique_ptr<Expression> makeExtractedCondition(std::string lhs, const ConditionCode condition, std::string rhs)
     {
         lhs = simplifyArithmeticText(std::move(lhs));
         rhs = simplifyArithmeticText(std::move(rhs));
-        if (!unsignedComparison || op == "==" || op == "!=") {
-            return lhs + " " + op + " " + rhs;
+
+        auto lhsExpression = makeExpressionFromText(lhs);
+        auto rhsExpression = makeExpressionFromText(rhs);
+        if (!lhsExpression || !rhsExpression) {
+            return nullptr;
         }
-        return "(unsigned)(" + lhs + ") " + op + " (unsigned)(" + rhs + ")";
+
+        return std::make_unique<ComparisonExpression>(comparisonOpFromCondition(condition), std::move(lhsExpression), std::move(rhsExpression));
+    }
+
+    void assignCondition(IfNode& node, const Expression& condition)
+    {
+        node.condition = cloneExpression(&condition);
+    }
+
+    void assignCondition(WhileNode& node, std::unique_ptr<Expression> condition)
+    {
+        node.condition = std::move(condition);
+    }
+
+    void assignCondition(DoWhileNode& node, std::unique_ptr<Expression> condition)
+    {
+        node.condition = std::move(condition);
+    }
+
+    void invertCondition(IfNode& node)
+    {
+        if (node.condition) {
+            node.condition = invertConditionExpression(*node.condition);
+        }
+    }
+
+    LoopBoundaryKind boundaryKindForSuccessor(const Graph& cfg, const size_t successor, const size_t continueTarget, const size_t breakTarget)
+    {
+        if (successor == breakTarget && isValidBlockId(cfg, breakTarget)) {
+            return LoopBoundaryKind::Break;
+        }
+        if (successor == continueTarget && isValidBlockId(cfg, continueTarget)) {
+            return LoopBoundaryKind::Continue;
+        }
+        return LoopBoundaryKind::None;
+    }
+
+    std::optional<LoopBoundaryBranch> classifyLoopBoundaryBranch(
+          const Graph& cfg, const size_t s0, const size_t s1, const size_t continueTarget, const size_t breakTarget)
+    {
+        const bool hasLoopContext = isValidBlockId(cfg, continueTarget) || isValidBlockId(cfg, breakTarget);
+        if (!hasLoopContext) {
+            return std::nullopt;
+        }
+
+        const LoopBoundaryKind s0Kind = boundaryKindForSuccessor(cfg, s0, continueTarget, breakTarget);
+        const LoopBoundaryKind s1Kind = boundaryKindForSuccessor(cfg, s1, continueTarget, breakTarget);
+        const bool s0IsBoundary       = s0Kind != LoopBoundaryKind::None;
+        const bool s1IsBoundary       = s1Kind != LoopBoundaryKind::None;
+        if (s0IsBoundary == s1IsBoundary) {
+            return std::nullopt;
+        }
+
+        if (s0IsBoundary) {
+            return LoopBoundaryBranch{ s0Kind, s1, false };
+        }
+        return LoopBoundaryBranch{ s1Kind, s0, true };
     }
 
     bool isPureConditionExpressionDef(const IRInstruction& instruction)
@@ -128,26 +224,25 @@ namespace
         }
     }
 
-    std::optional<std::string> try_extract_condition_and_trim(std::vector<IRInstruction>& instrs, const bool invertOperator, const StackFrameLayout layout)
+    std::unique_ptr<Expression> try_extract_condition_and_trim(std::vector<IRInstruction>& instrs, const bool invertOperator, const StackFrameLayout layout)
     {
         if (instrs.empty()) {
-            return std::nullopt;
+            return nullptr;
         }
 
         const auto& jumpInst = instrs.back();
         if (!IRProperties::isConditionalJump(jumpInst.type)) {
-            return std::nullopt;
+            return nullptr;
         }
 
         ConditionCode condition = jumpInst.condition;
         if (condition == ConditionCode::None) {
-            return std::nullopt;
+            return nullptr;
         }
         if (invertOperator) {
             condition = invertCondition(condition);
         }
-        const std::string op_str      = conditionToOperator(condition);
-        const bool unsignedComparison = isUnsignedCondition(condition);
+        const std::string op_str = conditionToOperator(condition);
 
         size_t condIndex = instrs.size() - 1;
         while (condIndex > 0) {
@@ -164,7 +259,7 @@ namespace
                 collectConditionTempDefinition(instrs, condIndex, IRProperties::operandAt(candidate, 1), layout, eraseIndices);
                 collectConditionTempDefinition(instrs, condIndex, IRProperties::operandAt(candidate, 2), layout, eraseIndices);
                 eraseConditionInstructions(instrs, std::move(eraseIndices));
-                return renderComparison(lhs, op_str, rhs, unsignedComparison);
+                return makeExtractedCondition(lhs, condition, rhs);
             }
 
             if (candidate.type == IRType::TEST && (op_str == "==" || op_str == "!=")) {
@@ -175,9 +270,9 @@ namespace
                 collectConditionTempDefinition(instrs, condIndex, IRProperties::operandAt(candidate, 2), layout, eraseIndices);
                 eraseConditionInstructions(instrs, std::move(eraseIndices));
                 if (lhs == rhs) {
-                    return lhs + " " + op_str + " 0";
+                    return makeExtractedCondition(lhs, condition, "0");
                 }
-                return "(" + lhs + " & " + rhs + ") " + op_str + " 0";
+                return makeExtractedCondition("(" + lhs + " & " + rhs + ")", condition, "0");
             }
 
             if ((candidate.type == IRType::SUB || candidate.type == IRType::ADD) &&
@@ -190,15 +285,15 @@ namespace
                 eraseConditionInstructions(instrs, std::move(eraseIndices));
 
                 if (candidate.type == IRType::SUB) {
-                    return renderComparison(lhs, op_str, rhs, unsignedComparison);
+                    return makeExtractedCondition(lhs, condition, rhs);
                 }
-                return renderComparison("(" + lhs + " + " + rhs + ")", op_str, "0", unsignedComparison);
+                return makeExtractedCondition("(" + lhs + " + " + rhs + ")", condition, "0");
             }
 
             break;
         }
 
-        return std::nullopt;
+        return nullptr;
     }
 } // namespace
 
@@ -243,13 +338,13 @@ class LoopNodeBuilder
         const bool has_self_loop = (body_start == curr);
         const bool invert_cond   = (body_start != s0);
 
-        const auto condition = try_extract_condition_and_trim(instrs, invert_cond, stack_frame_layout_);
-        if (!condition.has_value()) {
+        auto condition = try_extract_condition_and_trim(instrs, invert_cond, stack_frame_layout_);
+        if (!condition) {
             return false;
         }
 
-        auto while_node            = std::make_unique<WhileNode>();
-        while_node->condition_expr = *condition;
+        auto while_node = std::make_unique<WhileNode>();
+        assignCondition(*while_node, std::move(condition));
 
         if (has_self_loop) {
             if (!instrs.empty()) {
@@ -293,8 +388,8 @@ class LoopNodeBuilder
 
             const size_t loop_exit     = (s0 == curr) ? s1 : s0;
             const bool invertCondition = (s1 == curr);
-            const auto condition       = try_extract_condition_and_trim(instrs, invertCondition, stack_frame_layout_);
-            if (!condition.has_value()) {
+            auto condition             = try_extract_condition_and_trim(instrs, invertCondition, stack_frame_layout_);
+            if (!condition) {
                 return false;
             }
 
@@ -302,8 +397,8 @@ class LoopNodeBuilder
                 return false;
             }
 
-            auto do_while_node            = std::make_unique<DoWhileNode>();
-            do_while_node->condition_expr = *condition;
+            auto do_while_node = std::make_unique<DoWhileNode>();
+            assignCondition(*do_while_node, std::move(condition));
 
             auto seq         = std::make_unique<SimpleBlockNode>();
             seq->block_index = curr;
@@ -324,13 +419,13 @@ class LoopNodeBuilder
         const size_t loop_header   = s0_is_back_target ? s0 : s1;
         const size_t loop_exit     = (loop_header == s0) ? s1 : s0;
         const bool invertCondition = !s0_is_back_target;
-        const auto condition       = try_extract_condition_and_trim(instrs, invertCondition, stack_frame_layout_);
-        if (!condition.has_value()) {
+        auto condition             = try_extract_condition_and_trim(instrs, invertCondition, stack_frame_layout_);
+        if (!condition) {
             return false;
         }
-        auto do_while_node            = std::make_unique<DoWhileNode>();
-        do_while_node->condition_expr = *condition;
-        do_while_node->body           = build_ast(cfg_, doms_, postdoms_, loop_header, curr, loop_header, loop_exit, calling_convention_);
+        auto do_while_node = std::make_unique<DoWhileNode>();
+        assignCondition(*do_while_node, std::move(condition));
+        do_while_node->body = build_ast(cfg_, doms_, postdoms_, loop_header, curr, loop_header, loop_exit, calling_convention_);
 
         if (!instrs.empty()) {
             auto seq         = std::make_unique<SimpleBlockNode>();
@@ -452,7 +547,7 @@ std::vector<std::unique_ptr<ASTNode>> build_ast(
             }
 
             auto condition = try_extract_condition_and_trim(instrs, false, stackFrameLayout);
-            if (!condition.has_value()) {
+            if (!condition) {
                 auto seq         = std::make_unique<SimpleBlockNode>();
                 seq->block_index = curr;
                 seq->statements  = lowerBlockToStatements(instrs, calling_convention);
@@ -461,23 +556,15 @@ std::vector<std::unique_ptr<ASTNode>> build_ast(
             }
 
             const bool has_loop_context = isValidBlockId(cfg, continue_target) || isValidBlockId(cfg, break_target);
-            const bool s0_is_break      = s0 == break_target && isValidBlockId(cfg, break_target);
-            const bool s1_is_break      = s1 == break_target && isValidBlockId(cfg, break_target);
-            const bool s0_is_continue   = s0 == continue_target && isValidBlockId(cfg, continue_target);
-            const bool s1_is_continue   = s1 == continue_target && isValidBlockId(cfg, continue_target);
-            const bool s0_is_boundary   = s0_is_break || s0_is_continue;
-            const bool s1_is_boundary   = s1_is_break || s1_is_continue;
-            if (has_loop_context && s0_is_boundary != s1_is_boundary) {
-                auto if_node            = std::make_unique<IfNode>();
-                if_node->condition_expr = *condition;
+            if (const auto boundary = classifyLoopBoundaryBranch(cfg, s0, s1, continue_target, break_target)) {
+                auto if_node = std::make_unique<IfNode>();
+                assignCondition(*if_node, *condition);
 
-                size_t next_block = s1;
-                if (s1_is_boundary) {
-                    if_node->condition_expr = ASTDetail::invertConditionExpr(if_node->condition_expr);
-                    next_block              = s0;
+                if (boundary->invert_condition) {
+                    invertCondition(*if_node);
                 }
 
-                if (s0_is_break || s1_is_break) {
+                if (boundary->kind == LoopBoundaryKind::Break) {
                     if_node->true_branch.push_back(std::make_unique<BreakNode>());
                 } else {
                     if_node->true_branch.push_back(std::make_unique<ContinueNode>());
@@ -490,12 +577,12 @@ std::vector<std::unique_ptr<ASTNode>> build_ast(
                     ast.push_back(std::move(seq));
                 }
                 ast.push_back(std::move(if_node));
-                curr = next_block;
+                curr = boundary->normal_block;
                 continue;
             }
 
-            auto if_node            = std::make_unique<IfNode>();
-            if_node->condition_expr = *condition;
+            auto if_node = std::make_unique<IfNode>();
+            assignCondition(*if_node, *condition);
 
             size_t merge_block = curr < postdoms.size() ? postdoms[curr] : static_cast<size_t>(-1);
             if (merge_block == curr || (merge_block >= cfg.blocks.size() && merge_block != static_cast<size_t>(-1))) {
@@ -508,10 +595,10 @@ std::vector<std::unique_ptr<ASTNode>> build_ast(
 
             if (merge_block != static_cast<size_t>(-1)) {
                 if (s0 == merge_block && s1 != merge_block) {
-                    if_node->condition_expr = ASTDetail::invertConditionExpr(if_node->condition_expr);
-                    true_block              = s1;
-                    false_block             = s0;
-                    omit_false_branch       = true;
+                    invertCondition(*if_node);
+                    true_block        = s1;
+                    false_block       = s0;
+                    omit_false_branch = true;
                 } else if (s1 == merge_block && s0 != merge_block) {
                     true_block        = s0;
                     false_block       = s1;

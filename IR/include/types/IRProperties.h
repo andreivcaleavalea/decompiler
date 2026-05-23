@@ -164,6 +164,40 @@ inline bool producesValue(const IRType type)
     return isDataMovement(type) || isArithmetic(type) || isBitwise(type);
 }
 
+inline bool isSimpleValueProducer(const IRType type)
+{
+    return type == IRType::ASSIGN || type == IRType::LOAD || type == IRType::LOAD_CONST || type == IRType::SEXT || type == IRType::LEA;
+}
+
+inline bool isPureExpression(const IRType type)
+{
+    return isSimpleValueProducer(type) || isArithmetic(type) || isBitwise(type);
+}
+
+inline bool isAssignmentLike(const IRType type)
+{
+    return type == IRType::ASSIGN || type == IRType::LOAD || type == IRType::STORE || type == IRType::SEXT;
+}
+
+inline bool isBinaryExpression(const IRType type)
+{
+    switch (type) {
+    case IRType::ADD:
+    case IRType::SUB:
+    case IRType::MUL:
+    case IRType::DIV:
+    case IRType::AND:
+    case IRType::OR:
+    case IRType::XOR:
+    case IRType::SHL:
+    case IRType::SHR:
+    case IRType::SAR:
+        return true;
+    default:
+        return false;
+    }
+}
+
 inline bool createsNewValue(const IRInstruction& instruction)
 {
     return hasOperandAt(instruction, 0) && isRegister(operandAt(instruction, 0)) && producesValue(instruction.type);

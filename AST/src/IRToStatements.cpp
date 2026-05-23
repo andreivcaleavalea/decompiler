@@ -16,383 +16,528 @@ namespace Decompiler
 {
 namespace
 {
-    std::string simplifyExpressionText(std::string expression)
+    std::unique_ptr<Expression> makeSimplifiedExpression(std::unique_ptr<Expression> expression)
     {
-        size_t pos = 0;
-        while ((pos = expression.find(" + -", pos)) != std::string::npos) {
-            expression.replace(pos, 4, " - ");
-            pos += 3;
+        auto* binary = dynamic_cast<BinaryExpression*>(expression.get());
+        if (binary == nullptr) {
+            return expression;
         }
-
-        constexpr std::string_view negPrefix = "0 - ";
-        if (expression.starts_with(negPrefix)) {
-            expression = "-" + expression.substr(negPrefix.size());
+        if (binary->op == BinaryOp::Sub) {
+            if (const auto* constant = dynamic_cast<const ConstantExpression*>(binary->lhs.get()); constant != nullptr && constant->value == "0") {
+                return std::make_unique<UnaryExpression>(UnaryOp::Negate, std::move(binary->rhs));
+            }
         }
-
-        constexpr std::string_view allBits = " ^ 4294967295";
-        if (expression.ends_with(allBits)) {
-            expression = "~" + expression.substr(0, expression.size() - allBits.size());
+        if (binary->op == BinaryOp::BitXor) {
+            if (const auto* constant = dynamic_cast<const ConstantExpression*>(binary->rhs.get()); constant != nullptr && constant->value == "4294967295") {
+                return std::make_unique<UnaryExpression>(UnaryOp::BitwiseNot, std::move(binary->lhs));
+            }
         }
         return expression;
     }
 
-    bool expressionNeedsParensForMultiplicative(const std::string& expression)
+    std::string renderSimplifiedExpression(std::unique_ptr<Expression> expression)
     {
-        return expression.find(" + ") != std::string::npos || expression.find(" - ") != std::string::npos;
-    }
-
-    std::string parenthesizeForOperator(const std::string& expression, const std::string& op)
-    {
-        if ((op == "*" || op == "/") && expressionNeedsParensForMultiplicative(expression)) {
-            return "(" + expression + ")";
+        if (!expression) {
+            return {};
         }
-        if ((op == ">>" || op == "<<") && expressionNeedsParensForMultiplicative(expression)) {
-            return "(" + expression + ")";
-        }
-        return expression;
+        return makeSimplifiedExpression(std::move(expression))->render();
     }
 
-    void pushText(std::vector<std::unique_ptr<ASTNode>>& statements, std::string text)
+    bool hasSameBinaryOperator(const std::string& expressionText, const BinaryOp op)
     {
-        statements.push_back(std::make_unique<TextNode>(std::move(text)));
+        const auto expression = makeExpressionFromText(expressionText);
+        const auto* binary    = dynamic_cast<const BinaryExpression*>(expression.get());
+        return binary != nullptr && binary->op == op;
     }
-} // namespace
 
-std::vector<std::unique_ptr<ASTNode>> lowerBlockToStatements(const std::vector<IRInstruction>& instructions, const CallingConvention calling_convention)
-{
+    bool isCommutative(const BinaryOp op)
+    {
+        return op == BinaryOp::Add || op == BinaryOp::Mul || op == BinaryOp::BitAnd || op == BinaryOp::BitOr || op == BinaryOp::BitXor;
+    }
+
+    std::optional<BinaryOp> binaryOpFromIRType(const IRType type)
+    {
+        switch (type) {
+        case IRType::ADD:
+            return BinaryOp::Add;
+        case IRType::SUB:
+            return BinaryOp::Sub;
+        case IRType::MUL:
+            return BinaryOp::Mul;
+        case IRType::DIV:
+            return BinaryOp::Div;
+        case IRType::AND:
+            return BinaryOp::BitAnd;
+        case IRType::OR:
+            return BinaryOp::BitOr;
+        case IRType::XOR:
+            return BinaryOp::BitXor;
+        case IRType::SHL:
+            return BinaryOp::Shl;
+        case IRType::SHR:
+        case IRType::SAR:
+            return BinaryOp::Shr;
+        default:
+            return std::nullopt;
+        }
+    }
+
+    std::string buildBinaryExpressionText(const IRType type, const std::string& lhsText, const std::string& rhsText)
+    {
+        const auto op = binaryOpFromIRType(type);
+        if (!op.has_value()) {
+            return {};
+        }
+
+        std::string leftText  = lhsText;
+        std::string rightText = rhsText;
+        if (isCommutative(*op) && hasSameBinaryOperator(rhsText, *op) && !hasSameBinaryOperator(lhsText, *op)) {
+            leftText  = rhsText;
+            rightText = lhsText;
+        }
+
+        auto lhs = makeExpressionFromText(leftText);
+        auto rhs = makeExpressionFromText(rightText);
+        if (!lhs || !rhs) {
+            return {};
+        }
+        return renderSimplifiedExpression(std::make_unique<BinaryExpression>(*op, std::move(lhs), std::move(rhs)));
+    }
+
+    void pushAssignment(std::vector<std::unique_ptr<ASTNode>>& statements, const std::string& target, const std::string& value)
+    {
+        auto targetExpression = makeExpressionFromText(target);
+        auto valueExpression  = makeExpressionFromText(value);
+        if (!targetExpression || !valueExpression) {
+            return;
+        }
+        statements.push_back(std::make_unique<AssignmentNode>(std::move(targetExpression), std::move(valueExpression)));
+    }
+
+    void pushReturn(std::vector<std::unique_ptr<ASTNode>>& statements, const std::string& value)
+    {
+        if (value.empty()) {
+            statements.push_back(std::make_unique<ReturnNode>());
+            return;
+        }
+        auto expression = makeExpressionFromText(value);
+        if (expression) {
+            statements.push_back(std::make_unique<ReturnNode>(std::move(expression)));
+        }
+    }
+
+    void pushExpressionStatement(std::vector<std::unique_ptr<ASTNode>>& statements, const std::string& expression)
+    {
+        auto expressionNode = makeExpressionFromText(expression);
+        if (expressionNode) {
+            statements.push_back(std::make_unique<ExpressionStatementNode>(std::move(expressionNode)));
+        }
+    }
+
+    void pushUpdate(std::vector<std::unique_ptr<ASTNode>>& statements, const std::string& target, const UnaryOp operation)
+    {
+        auto targetExpression = makeExpressionFromText(target);
+        if (targetExpression) {
+            statements.push_back(std::make_unique<ExpressionStatementNode>(std::make_unique<UnaryExpression>(operation, std::move(targetExpression))));
+        }
+    }
     using namespace ASTDetail;
 
-    std::vector<std::unique_ptr<ASTNode>> statements;
-    std::set<size_t> absorbedIndices;
-    const auto isUsedLater = [&](const std::string& value, const size_t fromIndex) {
-        if (value.empty()) {
-            return false;
-        }
-        for (size_t j = fromIndex + 1; j < instructions.size(); ++j) {
-            const auto& next = instructions[j];
-            if (IRProperties::operandAt(next, 1).value == value || IRProperties::operandAt(next, 2).value == value ||
-                IRProperties::operandAt(next, 0).value == value) {
-                return true;
-            }
-        }
-        return false;
-    };
-    const auto isSyntheticSsaCopy     = [](const IRInstruction& instruction) { return instruction.address == 0 && IRProperties::isAssign(instruction); };
-    const auto isReturnRegister       = [](const std::string& value) { return value == "eax" || value == "rax" || startsWithAny(value, { "eax_", "rax_" }); };
-    const auto isStackPointerRegister = [](const std::string& value) {
-        return value == "rsp" || value == "esp" || value == "sp" || startsWithAny(value, { "rsp_", "esp_", "sp_" });
-    };
-    const auto isFramePointerRegister = [](const std::string& value) {
-        return value == "rbp" || value == "ebp" || value == "bp" || startsWithAny(value, { "rbp_", "ebp_", "bp_" });
-    };
-    const auto isEpilogueNoise = [&](const IRInstruction& instruction) {
-        const std::string d         = normalizeOperandForDisplay(IRProperties::operandAt(instruction, 0).value);
-        const std::string s         = normalizeOperandForDisplay(IRProperties::operandAt(instruction, 1).value);
-        const bool touchesFrameRegs = isStackPointerRegister(d) || isStackPointerRegister(s) || isFramePointerRegister(d) || isFramePointerRegister(s);
-        if (!touchesFrameRegs) {
-            return false;
-        }
-        return instruction.type == IRType::ASSIGN || instruction.type == IRType::ADD || instruction.type == IRType::SUB || instruction.type == IRType::PUSH ||
-               instruction.type == IRType::POP;
-    };
-    const auto nextMeaningfulIndex = [&](const size_t from) {
-        size_t index = from;
-        while (index < instructions.size()) {
-            const auto& candidate = instructions[index];
-            if (IRProperties::isTerminator(candidate.type)) {
-                return index;
-            }
-            if (isSyntheticSsaCopy(candidate)) {
-                ++index;
-                continue;
-            }
-            if (!isEpilogueNoise(candidate)) {
-                return index;
-            }
-            ++index;
-        }
-        return instructions.size();
-    };
-    const auto callingConvention = [&]() {
-        if (calling_convention != CallingConvention::Unknown) {
-            return calling_convention;
+    class StatementLoweringContext
+    {
+      public:
+        StatementLoweringContext(const std::vector<IRInstruction>& blockInstructions, const CallingConvention requestedCallingConvention)
+            : instructions(blockInstructions), callingConvention(resolveCallingConvention(blockInstructions, requestedCallingConvention)),
+              stackFrameLayout(stackFrameLayoutForCallingConvention(callingConvention))
+        {
         }
 
-        bool hasSystemVLeadRegs = false;
-        bool hasWinLeadRegs     = false;
-
-        const auto observeOperand = [&](const std::string& operand) {
-            const std::string base = normalizedRegisterBase(normalizeOperandForDisplay(operand));
-            if (base == "rdi" || base == "rsi") {
-                hasSystemVLeadRegs = true;
+        std::vector<std::unique_ptr<ASTNode>> lower()
+        {
+            for (size_t index = 0; index < instructions.size(); ++index) {
+                lowerInstruction(index);
             }
-            if (base == "rcx") {
-                hasWinLeadRegs = true;
-            }
-        };
-
-        for (const auto& instruction : instructions) {
-            for (const auto& operand : instruction.operands) {
-                observeOperand(operand.value);
-            }
+            return std::move(statements);
         }
 
-        if (hasSystemVLeadRegs) {
-            return CallingConvention::SystemV;
+      private:
+        const std::vector<IRInstruction>& instructions;
+        std::vector<std::unique_ptr<ASTNode>> statements;
+        std::set<size_t> absorbedIndices;
+        CallingConvention callingConvention;
+        StackFrameLayout stackFrameLayout;
+
+        static bool isSyntheticSsaCopy(const IRInstruction& instruction)
+        {
+            return instruction.address == 0 && IRProperties::isAssign(instruction);
         }
-        if (hasWinLeadRegs) {
-            return CallingConvention::Win64;
-        }
-        return CallingConvention::Unknown;
-    }();
-    const auto stackFrameLayout         = stackFrameLayoutForCallingConvention(callingConvention);
-    const auto normalizeOperand         = [&](const std::string& operand) { return normalizeOperandForDisplay(operand, stackFrameLayout); };
-    const auto argumentIndexForRegister = [&](const std::string& registerName) -> std::optional<size_t> {
-        return argumentIndexForRegisterName(registerName, callingConvention);
-    };
-    const auto resolveRegisterBaseAt = [&](const std::string& base, const size_t index) {
-        for (size_t j = index; j-- > 0;) {
-            const auto& previous = instructions[j];
-            if (normalizedRegisterBase(IRProperties::operandAt(previous, 0).value) != base) {
-                continue;
+
+        static CallingConvention resolveCallingConvention(
+              const std::vector<IRInstruction>& blockInstructions, const CallingConvention requestedCallingConvention)
+        {
+            if (requestedCallingConvention != CallingConvention::Unknown) {
+                return requestedCallingConvention;
             }
 
-            if (previous.type == IRType::ASSIGN || previous.type == IRType::LOAD || previous.type == IRType::LOAD_CONST || previous.type == IRType::SEXT ||
-                previous.type == IRType::LEA) {
-                std::string value = normalizeOperand(IRProperties::operandAt(previous, 1).value);
-                if (IRProperties::operandAt(previous, 1).kind == OperandKind::SsaTemp) {
-                    value = substituteTempFromDefinitions(instructions, j, IRProperties::operandAt(previous, 1).value, stackFrameLayout);
+            bool hasSystemVLeadRegs = false;
+            bool hasWinLeadRegs     = false;
+
+            for (const auto& instruction : blockInstructions) {
+                for (const auto& operand : instruction.operands) {
+                    const std::string base = normalizedRegisterBase(normalizeOperandForDisplay(operand.value));
+                    if (base == "rdi" || base == "rsi") {
+                        hasSystemVLeadRegs = true;
+                    }
+                    if (base == "rcx") {
+                        hasWinLeadRegs = true;
+                    }
                 }
-                return normalizeImmediateForDisplay(value);
             }
-            break;
+
+            if (hasSystemVLeadRegs) {
+                return CallingConvention::SystemV;
+            }
+            if (hasWinLeadRegs) {
+                return CallingConvention::Win64;
+            }
+            return CallingConvention::Unknown;
         }
-        return base;
-    };
-    const auto renderMemoryAddress = [&](const IRMemoryAddress& memory, const std::string& original, const size_t index) {
-        if (memory.ripRelative) {
+
+        bool isUsedLater(const std::string& value, const size_t fromIndex) const
+        {
+            if (value.empty()) {
+                return false;
+            }
+            for (size_t j = fromIndex + 1; j < instructions.size(); ++j) {
+                const auto& next = instructions[j];
+                if (IRProperties::operandAt(next, 1).value == value || IRProperties::operandAt(next, 2).value == value ||
+                    IRProperties::operandAt(next, 0).value == value) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        bool isEpilogueNoise(const IRInstruction& instruction) const
+        {
+            const std::string dest      = normalizeOperandForDisplay(IRProperties::operandAt(instruction, 0).value);
+            const std::string source    = normalizeOperandForDisplay(IRProperties::operandAt(instruction, 1).value);
+            const bool touchesFrameRegs = isStackOrFrameRegisterName(dest) || isStackOrFrameRegisterName(source);
+            if (!touchesFrameRegs) {
+                return false;
+            }
+            return instruction.type == IRType::ASSIGN || instruction.type == IRType::ADD || instruction.type == IRType::SUB ||
+                   instruction.type == IRType::PUSH || instruction.type == IRType::POP;
+        }
+
+        size_t nextMeaningfulIndex(const size_t from) const
+        {
+            size_t index = from;
+            while (index < instructions.size()) {
+                const auto& candidate = instructions[index];
+                if (IRProperties::isTerminator(candidate.type)) {
+                    return index;
+                }
+                if (isSyntheticSsaCopy(candidate)) {
+                    ++index;
+                    continue;
+                }
+                if (!isEpilogueNoise(candidate)) {
+                    return index;
+                }
+                ++index;
+            }
+            return instructions.size();
+        }
+
+        std::string normalizeOperand(const std::string& operand) const
+        {
+            return normalizeOperandForDisplay(operand, stackFrameLayout);
+        }
+
+        std::optional<size_t> argumentIndexForRegister(const std::string& registerName) const
+        {
+            return argumentIndexForRegisterName(registerName, callingConvention);
+        }
+
+        std::string resolveRegisterBaseAt(const std::string& base, const size_t index) const
+        {
+            for (size_t j = index; j-- > 0;) {
+                const auto& previous = instructions[j];
+                if (normalizedRegisterBase(IRProperties::operandAt(previous, 0).value) != base) {
+                    continue;
+                }
+
+                if (previous.type == IRType::ASSIGN || previous.type == IRType::LOAD || previous.type == IRType::LOAD_CONST || previous.type == IRType::SEXT ||
+                    previous.type == IRType::LEA) {
+                    std::string value = normalizeOperand(IRProperties::operandAt(previous, 1).value);
+                    if (IRProperties::operandAt(previous, 1).kind == OperandKind::SsaTemp) {
+                        value = substituteTempFromDefinitions(instructions, j, IRProperties::operandAt(previous, 1).value, stackFrameLayout);
+                    }
+                    return normalizeImmediateForDisplay(value);
+                }
+                break;
+            }
+            return base;
+        }
+
+        std::string renderMemoryAddress(const IRMemoryAddress& memory, const std::string& original, const size_t index) const
+        {
+            if (memory.ripRelative) {
+                return normalizeOperand(original);
+            }
+
+            const std::string baseExpr  = memory.base.empty() ? std::string{} : resolveRegisterBaseAt(memory.base, index);
+            const std::string indexExpr = memory.index.empty() ? std::string{} : resolveRegisterBaseAt(memory.index, index);
+
+            if (!baseExpr.empty() && !indexExpr.empty() && memory.displacement == 0) {
+                if (memory.scale == 1 || memory.scale == 4) {
+                    return baseExpr + "[" + indexExpr + "]";
+                }
+                return baseExpr + "[" + indexExpr + " * " + std::to_string(memory.scale) + "]";
+            }
+
+            if (!baseExpr.empty() && memory.index.empty() && memory.displacement == 0 && baseExpr != memory.base) {
+                return "*" + baseExpr;
+            }
+
             return normalizeOperand(original);
         }
 
-        const std::string baseExpr  = memory.base.empty() ? std::string{} : resolveRegisterBaseAt(memory.base, index);
-        const std::string indexExpr = memory.index.empty() ? std::string{} : resolveRegisterBaseAt(memory.index, index);
-
-        if (!baseExpr.empty() && !indexExpr.empty() && memory.displacement == 0) {
-            if (memory.scale == 1 || memory.scale == 4) {
-                return baseExpr + "[" + indexExpr + "]";
+        std::string renderMemoryOperand(const IROperand& operand, const size_t index) const
+        {
+            if (operand.memory.has_value()) {
+                return renderMemoryAddress(*operand.memory, operand.value, index);
             }
-            return baseExpr + "[" + indexExpr + " * " + std::to_string(memory.scale) + "]";
+            return normalizeOperand(operand.value);
         }
 
-        if (!baseExpr.empty() && memory.index.empty() && memory.displacement == 0 && baseExpr != memory.base) {
-            return "*" + baseExpr;
-        }
-
-        return normalizeOperand(original);
-    };
-    const auto renderMemoryOperand = [&](const IROperand& operand, const size_t index) {
-        if (operand.memory.has_value()) {
-            return renderMemoryAddress(*operand.memory, operand.value, index);
-        }
-        return normalizeOperand(operand.value);
-    };
-    const auto renderInlineMemoryText = [&](const std::string& operand, const size_t index) {
-        const auto lb = operand.find('[');
-        const auto rb = operand.find(']');
-        if (lb == std::string::npos || rb == std::string::npos || rb <= lb + 1) {
-            return normalizeOperand(operand);
-        }
-
-        std::string inside;
-        inside.reserve(rb - lb - 1);
-        for (size_t i = lb + 1; i < rb; ++i) {
-            if (operand[i] != ' ') {
-                inside += static_cast<char>(std::tolower(static_cast<unsigned char>(operand[i])));
+        std::string renderInlineMemoryText(const std::string& operand, const size_t index) const
+        {
+            const auto lb = operand.find('[');
+            const auto rb = operand.find(']');
+            if (lb == std::string::npos || rb == std::string::npos || rb <= lb + 1) {
+                return normalizeOperand(operand);
             }
-        }
 
-        if (inside.starts_with("rip")) {
-            return normalizeOperand(operand);
-        }
-
-        const auto plus = inside.find('+');
-        if (plus != std::string::npos) {
-            const std::string base = inside.substr(0, plus);
-            const std::string rest = inside.substr(plus + 1);
-            const auto scalePos    = rest.find('*');
-            if (scalePos != std::string::npos) {
-                const std::string indexBase = rest.substr(0, scalePos);
-                const std::string scale     = rest.substr(scalePos + 1);
-                const std::string baseExpr  = resolveRegisterBaseAt(base, index);
-                const std::string indexExpr = resolveRegisterBaseAt(indexBase, index);
-                if (!baseExpr.empty() && !indexExpr.empty()) {
-                    if (scale == "1" || scale == "4") {
-                        return baseExpr + "[" + indexExpr + "]";
-                    }
-                    return baseExpr + "[" + indexExpr + " * " + scale + "]";
+            std::string inside;
+            inside.reserve(rb - lb - 1);
+            for (size_t i = lb + 1; i < rb; ++i) {
+                if (operand[i] != ' ') {
+                    inside += static_cast<char>(std::tolower(static_cast<unsigned char>(operand[i])));
                 }
             }
+
+            if (inside.starts_with("rip")) {
+                return normalizeOperand(operand);
+            }
+
+            const auto plus = inside.find('+');
+            if (plus != std::string::npos) {
+                const std::string base = inside.substr(0, plus);
+                const std::string rest = inside.substr(plus + 1);
+                const auto scalePos    = rest.find('*');
+                if (scalePos != std::string::npos) {
+                    const std::string indexBase = rest.substr(0, scalePos);
+                    const std::string scale     = rest.substr(scalePos + 1);
+                    const std::string baseExpr  = resolveRegisterBaseAt(base, index);
+                    const std::string indexExpr = resolveRegisterBaseAt(indexBase, index);
+                    if (!baseExpr.empty() && !indexExpr.empty()) {
+                        if (scale == "1" || scale == "4") {
+                            return baseExpr + "[" + indexExpr + "]";
+                        }
+                        return baseExpr + "[" + indexExpr + " * " + scale + "]";
+                    }
+                }
+            }
+
+            const bool insideIsIdentifier =
+                  !inside.empty() && std::all_of(inside.begin(), inside.end(), [](const unsigned char ch) { return std::isalnum(ch) != 0 || ch == '_'; });
+            if (insideIsIdentifier) {
+                const std::string baseExpr = resolveRegisterBaseAt(inside, index);
+                if (!baseExpr.empty() && baseExpr != inside) {
+                    return "*" + baseExpr;
+                }
+            }
+
+            return normalizeOperand(operand);
         }
 
-        const bool insideIsIdentifier =
-              !inside.empty() && std::all_of(inside.begin(), inside.end(), [](const unsigned char ch) { return std::isalnum(ch) != 0 || ch == '_'; });
-        if (insideIsIdentifier) {
-            const std::string baseExpr = resolveRegisterBaseAt(inside, index);
-            if (!baseExpr.empty() && baseExpr != inside) {
-                return "*" + baseExpr;
-            }
-        }
-
-        return normalizeOperand(operand);
-    };
-    const auto normalizeMemoryReferences = [&](std::string expression, const size_t index) {
-        size_t searchFrom = 0;
-        while (true) {
-            const auto lb = expression.find('[', searchFrom);
-            if (lb == std::string::npos) {
-                break;
-            }
-            const auto rb = expression.find(']', lb + 1);
-            if (rb == std::string::npos) {
-                break;
-            }
-
-            size_t start = lb;
-            while (start > 0) {
-                const unsigned char ch = static_cast<unsigned char>(expression[start - 1]);
-                if (std::isalnum(ch) == 0 && expression[start - 1] != '_' && expression[start - 1] != ' ') {
+        std::string normalizeMemoryReferences(std::string expression, const size_t index) const
+        {
+            size_t searchFrom = 0;
+            while (true) {
+                const auto lb = expression.find('[', searchFrom);
+                if (lb == std::string::npos) {
                     break;
                 }
-                --start;
-            }
-            while (start < lb && expression[start] == ' ') {
-                ++start;
-            }
+                const auto rb = expression.find(']', lb + 1);
+                if (rb == std::string::npos) {
+                    break;
+                }
 
-            const std::string replacement = renderInlineMemoryText(expression.substr(start, rb - start + 1), index);
-            if (replacement == expression.substr(start, rb - start + 1)) {
-                searchFrom = rb + 1;
-                continue;
-            }
-            expression.replace(start, rb - start + 1, replacement);
-            searchFrom = start + replacement.size();
-        }
-        return expression;
-    };
+                size_t start = lb;
+                while (start > 0) {
+                    const unsigned char ch = static_cast<unsigned char>(expression[start - 1]);
+                    if (std::isalnum(ch) == 0 && expression[start - 1] != '_' && expression[start - 1] != ' ') {
+                        break;
+                    }
+                    --start;
+                }
+                while (start < lb && expression[start] == ' ') {
+                    ++start;
+                }
 
-    const auto renderExpression = [&](const IROperand& operand, const size_t index) {
-        if (operand.type == OpType::MEM) {
-            return normalizeImmediateForDisplay(renderMemoryOperand(operand, index));
-        }
-        std::string value = normalizeOperand(operand.value);
-        if (operand.kind == OperandKind::SsaTemp) {
-            value = substituteTempFromDefinitions(instructions, index, operand.value, stackFrameLayout);
-        }
-        return simplifyExpressionText(normalizeImmediateForDisplay(normalizeMemoryReferences(value, index)));
-    };
-    const auto tryBuildAssignedExpression = [&](const size_t index) -> std::optional<std::string> {
-        const auto& inst           = instructions[index];
-        const std::string srcExpr  = renderExpression(IRProperties::operandAt(inst, 1), index);
-        const std::string src2Expr = renderExpression(IRProperties::operandAt(inst, 2), index);
-
-        if (inst.type == IRType::ASSIGN || inst.type == IRType::LOAD_CONST || inst.type == IRType::LOAD || inst.type == IRType::SEXT ||
-            inst.type == IRType::LEA) {
-            if (srcExpr.empty()) {
-                return std::nullopt;
-            }
-            return simplifyExpressionText(srcExpr);
-        }
-        if (inst.type == IRType::ADD || inst.type == IRType::SUB || inst.type == IRType::AND || inst.type == IRType::OR || inst.type == IRType::XOR ||
-            inst.type == IRType::SHL || inst.type == IRType::SHR || inst.type == IRType::SAR || inst.type == IRType::MUL || inst.type == IRType::DIV) {
-            if (srcExpr.empty() || src2Expr.empty()) {
-                return std::nullopt;
-            }
-            const std::string op = inst.type == IRType::ADD   ? "+"
-                                   : inst.type == IRType::SUB ? "-"
-                                   : inst.type == IRType::AND ? "&"
-                                   : inst.type == IRType::OR  ? "|"
-                                   : inst.type == IRType::XOR ? "^"
-                                   : inst.type == IRType::SHL ? "<<"
-                                   : inst.type == IRType::MUL ? "*"
-                                   : inst.type == IRType::DIV ? "/"
-                                                              : ">>";
-            return simplifyExpressionText(parenthesizeForOperator(srcExpr, op) + " " + op + " " + parenthesizeForOperator(src2Expr, op));
-        }
-        if (inst.type == IRType::NEG || inst.type == IRType::NOT) {
-            if (srcExpr.empty()) {
-                return std::nullopt;
-            }
-            return simplifyExpressionText(std::string(inst.type == IRType::NEG ? "-" : "~") + srcExpr);
-        }
-        if (inst.type == IRType::SETCC) {
-            for (size_t k = index; k-- > 0;) {
-                const auto& flag = instructions[k];
-                if (flag.type != IRType::TEST && flag.type != IRType::CMP) {
+                const std::string replacement = renderInlineMemoryText(expression.substr(start, rb - start + 1), index);
+                if (replacement == expression.substr(start, rb - start + 1)) {
+                    searchFrom = rb + 1;
                     continue;
                 }
-                const std::string lhs = renderExpression(IRProperties::operandAt(flag, 1), k);
-                const std::string op  = conditionToOperator(inst.condition);
-                if (flag.type == IRType::TEST && IRProperties::operandAt(flag, 1).value == IRProperties::operandAt(flag, 2).value) {
-                    return "(" + lhs + " " + op + " 0)";
+                expression.replace(start, rb - start + 1, replacement);
+                searchFrom = start + replacement.size();
+            }
+            return expression;
+        }
+
+        std::string renderExpression(const IROperand& operand, const size_t index) const
+        {
+            if (operand.type == OpType::MEM) {
+                return normalizeImmediateForDisplay(renderMemoryOperand(operand, index));
+            }
+            std::string value = normalizeOperand(operand.value);
+            if (operand.kind == OperandKind::SsaTemp || isTemporaryName(value)) {
+                value = substituteTempFromDefinitions(instructions, index, operand.value, stackFrameLayout);
+            }
+            return renderSimplifiedExpression(makeExpressionFromText(normalizeImmediateForDisplay(normalizeMemoryReferences(value, index))));
+        }
+
+        std::optional<std::string> tryBuildAssignedExpression(const size_t index) const
+        {
+            const auto& inst           = instructions[index];
+            const std::string srcExpr  = renderExpression(IRProperties::operandAt(inst, 1), index);
+            const std::string src2Expr = renderExpression(IRProperties::operandAt(inst, 2), index);
+
+            if (IRProperties::isSimpleValueProducer(inst.type)) {
+                if (srcExpr.empty()) {
+                    return std::nullopt;
                 }
-                if (flag.type == IRType::CMP) {
-                    const std::string rhs = renderExpression(IRProperties::operandAt(flag, 2), k);
-                    return "(" + lhs + " " + op + " " + rhs + ")";
+                return renderSimplifiedExpression(makeExpressionFromText(srcExpr));
+            }
+            if (IRProperties::isBinaryExpression(inst.type)) {
+                if (srcExpr.empty() || src2Expr.empty()) {
+                    return std::nullopt;
+                }
+                return buildBinaryExpressionText(inst.type, srcExpr, src2Expr);
+            }
+            if (inst.type == IRType::NEG || inst.type == IRType::NOT) {
+                if (srcExpr.empty()) {
+                    return std::nullopt;
+                }
+                const UnaryOp op = inst.type == IRType::NEG ? UnaryOp::Negate : UnaryOp::BitwiseNot;
+                return renderSimplifiedExpression(std::make_unique<UnaryExpression>(op, makeExpressionFromText(srcExpr)));
+            }
+            if (inst.type == IRType::SETCC) {
+                for (size_t k = index; k-- > 0;) {
+                    const auto& flag = instructions[k];
+                    if (flag.type != IRType::TEST && flag.type != IRType::CMP) {
+                        continue;
+                    }
+                    const std::string lhs = renderExpression(IRProperties::operandAt(flag, 1), k);
+                    const std::string op  = conditionToOperator(inst.condition);
+                    if (flag.type == IRType::TEST && IRProperties::operandAt(flag, 1).value == IRProperties::operandAt(flag, 2).value) {
+                        return "(" + lhs + " " + op + " 0)";
+                    }
+                    if (flag.type == IRType::CMP) {
+                        const std::string rhs = renderExpression(IRProperties::operandAt(flag, 2), k);
+                        return "(" + lhs + " " + op + " " + rhs + ")";
+                    }
+                    return std::nullopt;
                 }
                 return std::nullopt;
             }
             return std::nullopt;
         }
-        return std::nullopt;
-    };
-    const auto isPureExpressionInstruction = [](const IRInstruction& instruction) {
-        return instruction.type == IRType::ASSIGN || instruction.type == IRType::LOAD_CONST || instruction.type == IRType::LOAD ||
-               instruction.type == IRType::SEXT || instruction.type == IRType::LEA || instruction.type == IRType::ADD || instruction.type == IRType::SUB ||
-               instruction.type == IRType::AND || instruction.type == IRType::OR || instruction.type == IRType::XOR || instruction.type == IRType::SHL ||
-               instruction.type == IRType::SHR || instruction.type == IRType::SAR || instruction.type == IRType::MUL || instruction.type == IRType::DIV ||
-               instruction.type == IRType::NEG || instruction.type == IRType::NOT;
-    };
-    const auto isComposableTemporary = [](const IROperand& operand) { return operand.kind == OperandKind::SsaTemp; };
 
-    for (size_t i = 0; i < instructions.size(); ++i) {
-        if (absorbedIndices.contains(i)) {
-            continue;
-        }
-        const auto& inst = instructions[i];
-        if (isSyntheticSsaCopy(inst) || IRProperties::isPhi(inst) || IRProperties::isNop(inst)) {
-            continue;
-        }
-        if (IRProperties::isJump(inst.type)) {
-            continue;
+        bool isComposableTemporary(const IROperand& operand) const
+        {
+            return operand.kind == OperandKind::SsaTemp || (operand.type == OpType::REG && isTemporaryName(normalizeOperand(operand.value)));
         }
 
-        if (inst.type == IRType::TEST || inst.type == IRType::CMP) {
-            const size_t nextIdx = nextMeaningfulIndex(i + 1);
-            if (nextIdx < instructions.size() && instructions[nextIdx].type == IRType::SETCC) {
-                continue;
+        bool shouldSkipBeforeLowering(const size_t index) const
+        {
+            if (absorbedIndices.contains(index)) {
+                return true;
             }
+
+            const auto& inst = instructions[index];
+            if (isSyntheticSsaCopy(inst) || IRProperties::isPhi(inst) || IRProperties::isNop(inst)) {
+                return true;
+            }
+            if (IRProperties::isJump(inst.type)) {
+                return true;
+            }
+
+            if (inst.type == IRType::TEST || inst.type == IRType::CMP) {
+                const size_t nextIdx = nextMeaningfulIndex(index + 1);
+                return nextIdx < instructions.size() && instructions[nextIdx].type == IRType::SETCC;
+            }
+            return false;
         }
 
-        if (inst.type == IRType::CALL) {
-            std::string callName = renderExpression(IRProperties::operandAt(inst, 0), i);
+        bool shouldSkipStackFrameInstruction(const IRInstruction& inst) const
+        {
+            if (inst.type == IRType::PUSH && isFramePointerRegisterName(IRProperties::operandAt(inst, 1).value)) {
+                return true;
+            }
+            if (inst.type == IRType::POP && isFramePointerRegisterName(IRProperties::operandAt(inst, 0).value)) {
+                return true;
+            }
+            return inst.type == IRType::RET;
+        }
+
+        bool isReturnSpillInstruction(const IRInstruction& instruction) const
+        {
+            const bool isSpillType = instruction.type == IRType::ASSIGN || instruction.type == IRType::STORE;
+            if (!isSpillType || !IRProperties::hasOperandAt(instruction, 0) || !IRProperties::hasOperandAt(instruction, 1)) {
+                return false;
+            }
+
+            const auto& dest                  = IRProperties::operandAt(instruction, 0);
+            const auto& src                   = IRProperties::operandAt(instruction, 1);
+            const bool sourceIsReturnRegister = isReturnRegisterName(src.value);
+            const bool destIsReturnRegister   = isReturnRegisterName(dest.value);
+            const bool destIsTemporary        = dest.kind == OperandKind::SsaTemp;
+            return sourceIsReturnRegister && !destIsReturnRegister && !destIsTemporary;
+        }
+
+        std::string buildCallName(const size_t index) const
+        {
+            const auto& call     = instructions[index];
+            std::string callName = renderExpression(IRProperties::operandAt(call, 0), index);
             if (isTemporaryName(callName)) {
-                callName =
-                      normalizeImmediateForDisplay(substituteTempFromDefinitions(instructions, i, IRProperties::operandAt(inst, 0).value, stackFrameLayout));
+                callName = normalizeImmediateForDisplay(
+                      substituteTempFromDefinitions(instructions, index, IRProperties::operandAt(call, 0).value, stackFrameLayout));
             }
             if (callName.empty()) {
                 callName = "call";
             }
+
             callName                    = llvm::demangle(callName);
             const auto callNameParenPos = callName.find('(');
             if (callNameParenPos != std::string::npos) {
                 callName = callName.substr(0, callNameParenPos);
             }
+            return callName;
+        }
 
+        std::map<size_t, std::pair<size_t, std::string>> collectCallArguments(const size_t callIndex) const
+        {
             std::map<size_t, std::pair<size_t, std::string>> argsByIndex;
-            for (size_t j = i; j-- > 0;) {
+            for (size_t j = callIndex; j-- > 0;) {
                 if (absorbedIndices.contains(j)) {
                     continue;
                 }
+
                 const auto& candidate = instructions[j];
                 if (isSyntheticSsaCopy(candidate)) {
                     continue;
@@ -400,30 +545,38 @@ std::vector<std::unique_ptr<ASTNode>> lowerBlockToStatements(const std::vector<I
                 if (candidate.type == IRType::CALL || IRProperties::isControlFlow(candidate.type)) {
                     break;
                 }
-                if (candidate.type != IRType::ASSIGN && candidate.type != IRType::LOAD && candidate.type != IRType::LOAD_CONST &&
-                    candidate.type != IRType::SEXT && candidate.type != IRType::LEA) {
+                if (!IRProperties::isSimpleValueProducer(candidate.type)) {
                     continue;
                 }
                 if (!IRProperties::hasOperandAt(candidate, 0) || !IRProperties::hasOperandAt(candidate, 1)) {
                     continue;
                 }
+
                 const auto& argDest = candidate.operands[0];
                 if (argDest.type != OpType::REG) {
                     continue;
                 }
+
                 const auto argIdx = argumentIndexForRegister(argDest.value);
                 if (!argIdx.has_value() || argsByIndex.contains(*argIdx)) {
                     continue;
                 }
+
                 const std::string argExpr = renderExpression(IRProperties::operandAt(candidate, 1), j);
                 if (!argExpr.empty()) {
                     argsByIndex[*argIdx] = { j, argExpr };
                 }
             }
+            return argsByIndex;
+        }
 
-            std::string callExpr = callName + "(";
+        std::string buildCallExpression(const size_t callIndex)
+        {
+            std::string callExpr = buildCallName(callIndex) + "(";
             bool firstArg        = true;
-            for (const auto& [argIdx, argInfo] : argsByIndex) {
+
+            for (const auto& argument : collectCallArguments(callIndex)) {
+                const auto& argInfo = argument.second;
                 if (!firstArg) {
                     callExpr += ", ";
                 }
@@ -432,306 +585,392 @@ std::vector<std::unique_ptr<ASTNode>> lowerBlockToStatements(const std::vector<I
                 firstArg = false;
             }
             callExpr += ")";
+            return callExpr;
+        }
 
-            size_t spillIdx = nextMeaningfulIndex(i + 1);
+        bool tryLowerBoolCallSpill(const std::string& callExpr, const size_t testIndex)
+        {
+            if (testIndex >= instructions.size() || instructions[testIndex].type != IRType::TEST) {
+                return false;
+            }
 
-            // Pattern: CALL → TEST → SETCC → [SsaTemp copies] → STORE(named, rax)
-            // This is the bool-return pattern: the compiler normalizes the bool via test+setne.
-            // The whole chain is equivalent to just the call's return value.
-            if (spillIdx < instructions.size() && instructions[spillIdx].type == IRType::TEST) {
-                const size_t setccIdx = nextMeaningfulIndex(spillIdx + 1);
-                if (setccIdx < instructions.size() && instructions[setccIdx].type == IRType::SETCC) {
-                    // Skip intermediate SsaTemp return-register copies (e.g., from movzx eax, al)
-                    size_t nextIdx = nextMeaningfulIndex(setccIdx + 1);
-                    std::vector<size_t> intermediateIndices;
-                    while (nextIdx < instructions.size() && (instructions[nextIdx].type == IRType::ASSIGN || instructions[nextIdx].type == IRType::LOAD) &&
-                           IRProperties::operandAt(instructions[nextIdx], 0).kind == OperandKind::SsaTemp &&
-                           isReturnRegister(IRProperties::operandAt(instructions[nextIdx], 0).value)) {
-                        intermediateIndices.push_back(nextIdx);
-                        nextIdx = nextMeaningfulIndex(nextIdx + 1);
-                    }
-                    if (nextIdx < instructions.size()) {
-                        const auto& boolSpill = instructions[nextIdx];
-                        if ((boolSpill.type == IRType::ASSIGN || boolSpill.type == IRType::STORE) && IRProperties::hasOperandAt(boolSpill, 0) &&
-                            IRProperties::hasOperandAt(boolSpill, 1) && isReturnRegister(IRProperties::operandAt(boolSpill, 1).value) &&
-                            !isReturnRegister(IRProperties::operandAt(boolSpill, 0).value) &&
-                            IRProperties::operandAt(boolSpill, 0).kind != OperandKind::SsaTemp) {
-                            const std::string boolDest = normalizeOperand(IRProperties::operandAt(boolSpill, 0).value);
-                            pushText(statements, boolDest + " = " + callExpr);
-                            absorbedIndices.insert(spillIdx);
-                            absorbedIndices.insert(setccIdx);
-                            for (const size_t idx : intermediateIndices) {
-                                absorbedIndices.insert(idx);
-                            }
-                            absorbedIndices.insert(nextIdx);
-                            continue;
-                        }
-                    }
+            const size_t setccIdx = nextMeaningfulIndex(testIndex + 1);
+            if (setccIdx >= instructions.size() || instructions[setccIdx].type != IRType::SETCC) {
+                return false;
+            }
+
+            size_t nextIdx = nextMeaningfulIndex(setccIdx + 1);
+            std::vector<size_t> intermediateIndices;
+            while (nextIdx < instructions.size() && (instructions[nextIdx].type == IRType::ASSIGN || instructions[nextIdx].type == IRType::LOAD) &&
+                   IRProperties::operandAt(instructions[nextIdx], 0).kind == OperandKind::SsaTemp &&
+                   isReturnRegisterName(IRProperties::operandAt(instructions[nextIdx], 0).value)) {
+                intermediateIndices.push_back(nextIdx);
+                nextIdx = nextMeaningfulIndex(nextIdx + 1);
+            }
+
+            if (nextIdx >= instructions.size()) {
+                return false;
+            }
+
+            const auto& boolSpill = instructions[nextIdx];
+            if (!isReturnSpillInstruction(boolSpill)) {
+                return false;
+            }
+
+            const std::string boolDest = normalizeOperand(IRProperties::operandAt(boolSpill, 0).value);
+            pushAssignment(statements, boolDest, callExpr);
+            absorbedIndices.insert(testIndex);
+            absorbedIndices.insert(setccIdx);
+            for (const size_t index : intermediateIndices) {
+                absorbedIndices.insert(index);
+            }
+            absorbedIndices.insert(nextIdx);
+            return true;
+        }
+
+        bool tryLowerCallSpill(const std::string& callExpr, const size_t spillIndex)
+        {
+            if (spillIndex >= instructions.size()) {
+                return false;
+            }
+
+            const auto& spill = instructions[spillIndex];
+            if (!isReturnSpillInstruction(spill)) {
+                return false;
+            }
+
+            const std::string spillDest = normalizeOperand(IRProperties::operandAt(spill, 0).value);
+            pushAssignment(statements, spillDest, callExpr);
+            absorbedIndices.insert(spillIndex);
+            return true;
+        }
+
+        bool tryLowerCall(const size_t index)
+        {
+            if (instructions[index].type != IRType::CALL) {
+                return false;
+            }
+
+            const std::string callExpr = buildCallExpression(index);
+            const size_t spillIndex    = nextMeaningfulIndex(index + 1);
+
+            if (tryLowerBoolCallSpill(callExpr, spillIndex)) {
+                return true;
+            }
+            if (tryLowerCallSpill(callExpr, spillIndex)) {
+                return true;
+            }
+
+            pushExpressionStatement(statements, callExpr);
+            return true;
+        }
+
+        bool tryLowerForwardedTemporary(size_t& index)
+        {
+            const auto& inst = instructions[index];
+            if (!isComposableTemporary(IRProperties::operandAt(inst, 0))) {
+                return false;
+            }
+
+            const size_t forwardedIndex = nextMeaningfulIndex(index + 1);
+            if (forwardedIndex >= instructions.size()) {
+                return false;
+            }
+
+            const auto& forwarded           = instructions[forwardedIndex];
+            const bool forwardsToAssignment = (forwarded.type == IRType::ASSIGN || forwarded.type == IRType::STORE) &&
+                                              IRProperties::operandAt(forwarded, 1).value == IRProperties::operandAt(inst, 0).value;
+            if (!forwardsToAssignment) {
+                const bool forwardsToCall =
+                      forwarded.type == IRType::CALL && IRProperties::operandAt(forwarded, 0).value == IRProperties::operandAt(inst, 0).value;
+                if (forwardsToCall && tryBuildAssignedExpression(index).has_value()) {
+                    return true;
                 }
+                return false;
             }
 
-            if (spillIdx < instructions.size()) {
-                const auto& spill = instructions[spillIdx];
-                if ((spill.type == IRType::ASSIGN || spill.type == IRType::STORE) && IRProperties::hasOperandAt(spill, 0) &&
-                    IRProperties::hasOperandAt(spill, 1) && isReturnRegister(IRProperties::operandAt(spill, 1).value) &&
-                    !isReturnRegister(IRProperties::operandAt(spill, 0).value) && IRProperties::operandAt(spill, 0).kind != OperandKind::SsaTemp) {
-                    const std::string spillDest = normalizeOperand(IRProperties::operandAt(spill, 0).value);
-                    pushText(statements, spillDest + " = " + callExpr);
-                    absorbedIndices.insert(spillIdx);
-                    continue;
-                }
+            std::string finalDest = normalizeOperand(IRProperties::operandAt(forwarded, 0).value);
+            if (forwarded.type == IRType::STORE) {
+                finalDest = renderExpression(IRProperties::operandAt(forwarded, 0), forwardedIndex);
             }
 
-            pushText(statements, callExpr);
-            continue;
-        }
-
-        if (inst.type == IRType::PUSH && startsWithAny(IRProperties::operandAt(inst, 1).value, { "rbp_" })) {
-            continue;
-        }
-        if (inst.type == IRType::POP && startsWithAny(IRProperties::operandAt(inst, 0).value, { "rbp_" })) {
-            continue;
-        }
-        if (inst.type == IRType::RET) {
-            continue;
-        }
-
-        std::string op   = inst.op;
-        std::string dest = normalizeOperand(IRProperties::operandAt(inst, 0).value);
-        std::string src  = simplifyExpressionText(renderExpression(IRProperties::operandAt(inst, 1), i));
-
-        if (inst.type == IRType::LOAD) {
-            op = "assign";
-        } else if (inst.type == IRType::STORE) {
-            op   = "assign";
-            dest = renderExpression(IRProperties::operandAt(inst, 0), i);
-        } else if (inst.type == IRType::SEXT) {
-            op = "assign";
-        }
-        const bool rendersAssignment = inst.type == IRType::ASSIGN || inst.type == IRType::LOAD || inst.type == IRType::STORE || inst.type == IRType::SEXT;
-
-        if (isStackPointerRegister(dest) || isStackPointerRegister(src)) {
-            continue;
-        }
-
-        if (rendersAssignment) {
-            const auto destArgIndex = parseStackArgumentSymbolIndex(dest);
-            const auto srcArgIndex  = argumentIndexForRegister(src);
-            if (destArgIndex.has_value() && srcArgIndex.has_value() && *destArgIndex == *srcArgIndex) {
-                continue;
+            const auto expression = tryBuildAssignedExpression(index);
+            if (!expression.has_value()) {
+                return false;
             }
-        }
 
-        if (isComposableTemporary(IRProperties::operandAt(inst, 0))) {
-            const size_t forwardedIndex = nextMeaningfulIndex(i + 1);
-            if (forwardedIndex < instructions.size()) {
-                const auto& forwarded = instructions[forwardedIndex];
-                if ((forwarded.type == IRType::ASSIGN || forwarded.type == IRType::STORE) &&
-                    IRProperties::operandAt(forwarded, 1).value == IRProperties::operandAt(inst, 0).value) {
-                    std::string finalDest = normalizeOperand(IRProperties::operandAt(forwarded, 0).value);
-                    if (forwarded.type == IRType::STORE) {
-                        finalDest = renderExpression(IRProperties::operandAt(forwarded, 0), forwardedIndex);
-                    }
-                    if (const auto expression = tryBuildAssignedExpression(i); expression.has_value()) {
-                        const size_t afterForward = nextMeaningfulIndex(forwardedIndex + 1);
-                        const bool isReturnAssignment =
-                              isReturnRegister(finalDest) && afterForward < instructions.size() && instructions[afterForward].type == IRType::RET;
-
-                        if (isReturnAssignment) {
-                            pushText(statements, "return " + *expression);
-                            i = afterForward;
-                            continue;
-                        }
-
-                        if (!finalDest.empty() && IRProperties::operandAt(forwarded, 0).kind != OperandKind::SsaTemp) {
-                            pushText(statements, finalDest + " = " + *expression);
-                            i = forwardedIndex;
-                            continue;
-                        }
-                    }
-                }
-
-                if (forwarded.type == IRType::CALL && IRProperties::operandAt(forwarded, 0).value == IRProperties::operandAt(inst, 0).value) {
-                    if (tryBuildAssignedExpression(i).has_value()) {
-                        continue;
-                    }
-                }
+            const size_t afterForward = nextMeaningfulIndex(forwardedIndex + 1);
+            const bool isReturnAssignment =
+                  isReturnRegisterName(finalDest) && afterForward < instructions.size() && instructions[afterForward].type == IRType::RET;
+            if (isReturnAssignment) {
+                pushReturn(statements, *expression);
+                index = afterForward;
+                return true;
             }
-        }
 
-        if (isComposableTemporary(IRProperties::operandAt(inst, 0))) {
-            const size_t forwardedIndex = nextMeaningfulIndex(i + 1);
-            if (forwardedIndex < instructions.size()) {
-                const auto& forwarded              = instructions[forwardedIndex];
-                const bool feedsForwardedTemporary = isPureExpressionInstruction(forwarded) && isComposableTemporary(IRProperties::operandAt(forwarded, 0)) &&
-                                                     (IRProperties::operandAt(forwarded, 1).value == IRProperties::operandAt(inst, 0).value ||
-                                                      IRProperties::operandAt(forwarded, 2).value == IRProperties::operandAt(inst, 0).value);
-                if (feedsForwardedTemporary) {
-                    continue;
-                }
+            if (!finalDest.empty() && IRProperties::operandAt(forwarded, 0).kind != OperandKind::SsaTemp) {
+                pushAssignment(statements, finalDest, *expression);
+                index = forwardedIndex;
+                return true;
             }
+
+            return false;
         }
 
-        if (isComposableTemporary(IRProperties::operandAt(inst, 0)) && argumentIndexForRegister(IRProperties::operandAt(inst, 0).value).has_value()) {
-            const size_t nextIdx = nextMeaningfulIndex(i + 1);
-            if (nextIdx < instructions.size() && instructions[nextIdx].type == IRType::CALL) {
-                continue;
+        bool shouldSkipTemporaryFeedingAnotherTemporary(const size_t index) const
+        {
+            const auto& inst = instructions[index];
+            if (!isComposableTemporary(IRProperties::operandAt(inst, 0))) {
+                return false;
             }
+
+            const size_t forwardedIndex = nextMeaningfulIndex(index + 1);
+            if (forwardedIndex >= instructions.size()) {
+                return false;
+            }
+
+            const auto& forwarded = instructions[forwardedIndex];
+            const bool forwardedIsTemporaryExpression =
+                  IRProperties::isPureExpression(forwarded.type) && isComposableTemporary(IRProperties::operandAt(forwarded, 0));
+            const bool forwardedUsesCurrentTemporary = IRProperties::operandAt(forwarded, 1).value == IRProperties::operandAt(inst, 0).value ||
+                                                       IRProperties::operandAt(forwarded, 2).value == IRProperties::operandAt(inst, 0).value;
+            return forwardedIsTemporaryExpression && forwardedUsesCurrentTemporary;
         }
 
-        if ((inst.type == IRType::ADD || inst.type == IRType::SUB) && i + 1 < instructions.size() && instructions[i + 1].type == IRType::ASSIGN &&
-            IRProperties::operandAt(instructions[i + 1], 1).value == IRProperties::operandAt(inst, 0).value) {
-            const std::string finalDest   = normalizeOperand(IRProperties::operandAt(instructions[i + 1], 0).value);
-            const std::string rhs         = renderExpression(IRProperties::operandAt(inst, 2), i);
-            const std::string expression  = (inst.type == IRType::ADD) ? (src + " + " + rhs) : (src + " - " + rhs);
-            const size_t afterAssign      = nextMeaningfulIndex(i + 2);
-            const bool isReturnAssignment = isReturnRegister(finalDest) && afterAssign < instructions.size() && instructions[afterAssign].type == IRType::RET;
+        bool shouldSkipTemporaryUsedAsCallArgument(const size_t index) const
+        {
+            const auto& inst = instructions[index];
+            if (!isComposableTemporary(IRProperties::operandAt(inst, 0))) {
+                return false;
+            }
+            if (!argumentIndexForRegister(IRProperties::operandAt(inst, 0).value).has_value()) {
+                return false;
+            }
+
+            const size_t nextIdx = nextMeaningfulIndex(index + 1);
+            return nextIdx < instructions.size() && instructions[nextIdx].type == IRType::CALL;
+        }
+
+        bool tryLowerForwardedAddSub(size_t& index, const std::string& src)
+        {
+            const auto& inst = instructions[index];
+            if (inst.type != IRType::ADD && inst.type != IRType::SUB) {
+                return false;
+            }
+            if (index + 1 >= instructions.size() || instructions[index + 1].type != IRType::ASSIGN) {
+                return false;
+            }
+            if (IRProperties::operandAt(instructions[index + 1], 1).value != IRProperties::operandAt(inst, 0).value) {
+                return false;
+            }
+
+            const std::string finalDest  = normalizeOperand(IRProperties::operandAt(instructions[index + 1], 0).value);
+            const std::string rhs        = renderExpression(IRProperties::operandAt(inst, 2), index);
+            const std::string expression = buildBinaryExpressionText(inst.type, src, rhs);
+            const size_t afterAssign     = nextMeaningfulIndex(index + 2);
+            const bool isReturnAssignment =
+                  isReturnRegisterName(finalDest) && afterAssign < instructions.size() && instructions[afterAssign].type == IRType::RET;
 
             if (isReturnAssignment) {
-                pushText(statements, "return " + expression);
-                i = afterAssign;
-                continue;
+                pushReturn(statements, expression);
+                index = afterAssign;
+                return true;
             }
 
             if (inst.type == IRType::ADD) {
-                if (finalDest == src && rhs == "1") {
-                    pushText(statements, finalDest + "++");
-                } else if (finalDest == src && rhs == "-1") {
-                    pushText(statements, finalDest + "--");
-                } else {
-                    pushText(statements, finalDest + " = " + src + " + " + rhs);
-                }
+                lowerAdd(finalDest, src, rhs);
             } else {
-                if (finalDest == src && rhs == "1") {
-                    pushText(statements, finalDest + "--");
-                } else {
-                    pushText(statements, finalDest + " = " + src + " - " + rhs);
-                }
+                lowerSub(finalDest, src, rhs);
             }
-            i += 1;
-            continue;
+
+            index += 1;
+            return true;
         }
 
-        if ((inst.type == IRType::ADD || inst.type == IRType::SUB) && isReturnRegister(dest) && nextMeaningfulIndex(i + 1) < instructions.size() &&
-            instructions[nextMeaningfulIndex(i + 1)].type == IRType::RET) {
+        bool tryLowerAddSubReturn(const size_t index, const std::string& dest, const std::string& src)
+        {
+            const auto& inst = instructions[index];
+            if (inst.type != IRType::ADD && inst.type != IRType::SUB) {
+                return false;
+            }
+            if (!isReturnRegisterName(dest)) {
+                return false;
+            }
+
+            const size_t nextIdx = nextMeaningfulIndex(index + 1);
+            if (nextIdx >= instructions.size() || instructions[nextIdx].type != IRType::RET) {
+                return false;
+            }
+
             const std::string rhs        = normalizeImmediateForDisplay(normalizeOperand(IRProperties::operandAt(inst, 2).value));
-            const std::string expression = (inst.type == IRType::ADD) ? (src + " + " + rhs) : (src + " - " + rhs);
-            pushText(statements, "return " + expression);
-            continue;
+            const std::string expression = buildBinaryExpressionText(inst.type, src, rhs);
+            pushReturn(statements, expression);
+            return true;
         }
 
-        if ((inst.type == IRType::LOAD_CONST || rendersAssignment) && isReturnRegister(dest)) {
-            const size_t nextIdx = nextMeaningfulIndex(i + 1);
+        bool tryLowerDirectReturn(const size_t index, const std::string& dest, const std::string& src, const bool assignmentLike)
+        {
+            const auto& inst = instructions[index];
+            if ((inst.type != IRType::LOAD_CONST && !assignmentLike) || !isReturnRegisterName(dest)) {
+                return false;
+            }
+
+            const size_t nextIdx = nextMeaningfulIndex(index + 1);
             const bool atReturnPoint =
                   nextIdx < instructions.size() && (instructions[nextIdx].type == IRType::RET || instructions[nextIdx].type == IRType::JMP);
-            if (atReturnPoint) {
-                if (src.empty()) {
-                    pushText(statements, "return");
-                } else {
-                    pushText(statements, "return " + normalizeImmediateForDisplay(src));
-                }
-                continue;
+            if (!atReturnPoint) {
+                return false;
             }
+
+            if (src.empty()) {
+                pushReturn(statements, {});
+            } else {
+                pushReturn(statements, normalizeImmediateForDisplay(src));
+            }
+            return true;
         }
 
-        if (inst.type == IRType::LOAD_CONST && IRProperties::operandAt(inst, 0).kind == OperandKind::SsaTemp &&
-            !isUsedLater(IRProperties::operandAt(inst, 0).value, i)) {
-            continue;
+        bool shouldSkipExpressionNoise(const size_t index, const std::string& dest, const std::string& src, const bool assignmentLike) const
+        {
+            const auto& inst = instructions[index];
+            if (inst.type == IRType::LOAD_CONST && IRProperties::operandAt(inst, 0).kind == OperandKind::SsaTemp &&
+                !isUsedLater(IRProperties::operandAt(inst, 0).value, index)) {
+                return true;
+            }
+            if (IRProperties::isPureExpression(inst.type) && isComposableTemporary(IRProperties::operandAt(inst, 0))) {
+                return true;
+            }
+            if (assignmentLike && isFramePointerRegisterName(dest) && isStackPointerRegisterName(src)) {
+                return true;
+            }
+            const bool assignsNamedVariableToTemporary =
+                  assignmentLike && IRProperties::operandAt(inst, 0).kind == OperandKind::SsaTemp &&
+                  (IRProperties::operandAt(inst, 1).kind == OperandKind::StackVar || IRProperties::operandAt(inst, 1).kind == OperandKind::GlobalVar);
+            if (assignsNamedVariableToTemporary) {
+                return true;
+            }
+            const bool unusedAddSubTemporary = (inst.type == IRType::ADD || inst.type == IRType::SUB) &&
+                                               IRProperties::operandAt(inst, 0).kind == OperandKind::SsaTemp &&
+                                               !isUsedLater(IRProperties::operandAt(inst, 0).value, index);
+            return unusedAddSubTemporary;
         }
 
-        if (rendersAssignment && startsWithAny(dest, { "rbp_" }) && startsWithAny(src, { "rsp_" })) {
-            continue;
-        }
-        if (rendersAssignment && IRProperties::operandAt(inst, 0).kind == OperandKind::SsaTemp &&
-            (IRProperties::operandAt(inst, 1).kind == OperandKind::StackVar || IRProperties::operandAt(inst, 1).kind == OperandKind::GlobalVar)) {
-            continue;
-        }
-        if ((inst.type == IRType::ADD || inst.type == IRType::SUB) && IRProperties::operandAt(inst, 0).kind == OperandKind::SsaTemp &&
-            !isUsedLater(IRProperties::operandAt(inst, 0).value, i)) {
-            continue;
-        }
-
-        if (rendersAssignment && !src.empty() && dest == src) {
-            continue;
-        }
-
-        if (rendersAssignment) {
-            pushText(statements, dest + (src.empty() ? " =" : " = " + simplifyExpressionText(src)));
-        } else if (inst.type == IRType::ADD) {
-            const std::string rhs = renderExpression(IRProperties::operandAt(inst, 2), i);
+        void lowerAdd(const std::string& dest, const std::string& src, const std::string& rhs)
+        {
             if (dest == src && rhs == "1") {
-                pushText(statements, dest + "++");
+                pushUpdate(statements, dest, UnaryOp::PostIncrement);
             } else if (dest == src && rhs == "-1") {
-                pushText(statements, dest + "--");
+                pushUpdate(statements, dest, UnaryOp::PostDecrement);
             } else {
-                pushText(statements, dest + " = " + simplifyExpressionText(src + " + " + rhs));
+                pushAssignment(statements, dest, src + " + " + rhs);
             }
-        } else if (inst.type == IRType::SUB) {
-            const std::string rhs = renderExpression(IRProperties::operandAt(inst, 2), i);
-            if (dest == src && rhs == "1") {
-                pushText(statements, dest + "--");
-            } else {
-                pushText(statements, dest + " = " + simplifyExpressionText(src + " - " + rhs));
-            }
-        } else if (
-              inst.type == IRType::AND || inst.type == IRType::OR || inst.type == IRType::XOR || inst.type == IRType::SHL || inst.type == IRType::SHR ||
-              inst.type == IRType::SAR) {
-            const std::string rhs      = renderExpression(IRProperties::operandAt(inst, 2), i);
-            const std::string opSymbol = inst.type == IRType::AND   ? "&"
-                                         : inst.type == IRType::OR  ? "|"
-                                         : inst.type == IRType::XOR ? "^"
-                                         : inst.type == IRType::SHL ? "<<"
-                                         : inst.type == IRType::SHR ? ">>"
-                                                                    : ">>";
-            pushText(statements, dest + " = " + simplifyExpressionText(src + " " + opSymbol + " " + rhs));
-        } else if (inst.type == IRType::MUL) {
-            const std::string rhs = renderExpression(IRProperties::operandAt(inst, 2), i);
-            if (!src.empty() && !rhs.empty()) {
-                pushText(statements, dest + " = " + simplifyExpressionText(parenthesizeForOperator(src, "*") + " * " + parenthesizeForOperator(rhs, "*")));
-            } else {
-                pushText(statements, op + " " + dest);
-            }
-        } else if (inst.type == IRType::DIV) {
-            const std::string rhs = renderExpression(IRProperties::operandAt(inst, 2), i);
-            if (!src.empty() && !rhs.empty()) {
-                pushText(statements, dest + " = " + simplifyExpressionText(parenthesizeForOperator(src, "/") + " / " + parenthesizeForOperator(rhs, "/")));
-            } else {
-                pushText(statements, op + " " + dest);
-            }
-        } else if (inst.type == IRType::NEG || inst.type == IRType::NOT) {
-            if (!src.empty()) {
-                pushText(statements, dest + " = " + simplifyExpressionText(std::string(inst.type == IRType::NEG ? "-" : "~") + src));
-            } else {
-                pushText(statements, op + " " + dest);
-            }
-        } else if (inst.type == IRType::PUSH) {
-            pushText(statements, "push " + src);
-        } else if (inst.type == IRType::CMP || inst.type == IRType::TEST) {
-            const std::string rhs = normalizeImmediateForDisplay(normalizeOperand(IRProperties::operandAt(inst, 2).value));
-            if (!src.empty() && !rhs.empty()) {
-                pushText(statements, op + " " + src + ", " + rhs);
-            } else if (!src.empty()) {
-                pushText(statements, op + " " + src);
-            } else {
-                pushText(statements, op);
-            }
-        } else if (inst.type == IRType::SETCC) {
-            if (const auto expression = tryBuildAssignedExpression(i); expression.has_value()) {
-                pushText(statements, dest + " = " + *expression);
-            }
-        } else {
-            std::string line = op;
-            if (!dest.empty()) {
-                line += " " + dest;
-            }
-            if (!src.empty()) {
-                line += dest.empty() ? " " : ", ";
-                line += src;
-            }
-            pushText(statements, std::move(line));
         }
-    }
 
-    return statements;
+        void lowerSub(const std::string& dest, const std::string& src, const std::string& rhs)
+        {
+            if (dest == src && rhs == "1") {
+                pushUpdate(statements, dest, UnaryOp::PostDecrement);
+            } else {
+                pushAssignment(statements, dest, src + " - " + rhs);
+            }
+        }
+
+        void lowerBinaryAssignment(const IRInstruction& inst, const size_t index, const std::string& dest, const std::string& src)
+        {
+            const std::string rhs        = renderExpression(IRProperties::operandAt(inst, 2), index);
+            const std::string expression = buildBinaryExpressionText(inst.type, src, rhs);
+            if (!expression.empty()) {
+                pushAssignment(statements, dest, expression);
+            }
+        }
+
+        void lowerRegularInstruction(const size_t index, const std::string& dest, const std::string& src, const bool assignmentLike)
+        {
+            const auto& inst = instructions[index];
+            if (assignmentLike) {
+                pushAssignment(statements, dest, src);
+            } else if (inst.type == IRType::ADD) {
+                lowerAdd(dest, src, renderExpression(IRProperties::operandAt(inst, 2), index));
+            } else if (inst.type == IRType::SUB) {
+                lowerSub(dest, src, renderExpression(IRProperties::operandAt(inst, 2), index));
+            } else if (IRProperties::isBinaryExpression(inst.type)) {
+                lowerBinaryAssignment(inst, index, dest, src);
+            } else if (inst.type == IRType::NEG || inst.type == IRType::NOT) {
+                if (!src.empty()) {
+                    const UnaryOp op = inst.type == IRType::NEG ? UnaryOp::Negate : UnaryOp::BitwiseNot;
+                    pushAssignment(statements, dest, renderSimplifiedExpression(std::make_unique<UnaryExpression>(op, makeExpressionFromText(src))));
+                }
+            } else if (inst.type == IRType::SETCC) {
+                if (const auto expression = tryBuildAssignedExpression(index); expression.has_value()) {
+                    pushAssignment(statements, dest, *expression);
+                }
+            }
+        }
+
+        void lowerInstruction(size_t& index)
+        {
+            if (shouldSkipBeforeLowering(index)) {
+                return;
+            }
+
+            const auto& inst = instructions[index];
+            if (tryLowerCall(index)) {
+                return;
+            }
+            if (shouldSkipStackFrameInstruction(inst)) {
+                return;
+            }
+
+            std::string dest = normalizeOperand(IRProperties::operandAt(inst, 0).value);
+            std::string src  = renderExpression(IRProperties::operandAt(inst, 1), index);
+            if (inst.type == IRType::STORE) {
+                dest = renderExpression(IRProperties::operandAt(inst, 0), index);
+            }
+
+            const bool assignmentLike = IRProperties::isAssignmentLike(inst.type);
+            if (isStackPointerRegisterName(dest) || isStackPointerRegisterName(src)) {
+                return;
+            }
+
+            const auto destArgIndex = parseStackArgumentSymbolIndex(dest);
+            const auto srcArgIndex  = argumentIndexForRegister(src);
+            if (assignmentLike && destArgIndex.has_value() && srcArgIndex.has_value() && *destArgIndex == *srcArgIndex) {
+                return;
+            }
+
+            if (tryLowerForwardedTemporary(index)) {
+                return;
+            }
+            if (shouldSkipTemporaryFeedingAnotherTemporary(index)) {
+                return;
+            }
+            if (shouldSkipTemporaryUsedAsCallArgument(index)) {
+                return;
+            }
+            if (tryLowerForwardedAddSub(index, src)) {
+                return;
+            }
+            if (tryLowerAddSubReturn(index, dest, src)) {
+                return;
+            }
+            if (tryLowerDirectReturn(index, dest, src, assignmentLike)) {
+                return;
+            }
+            if (shouldSkipExpressionNoise(index, dest, src, assignmentLike)) {
+                return;
+            }
+            if (assignmentLike && !src.empty() && dest == src) {
+                return;
+            }
+
+            lowerRegularInstruction(index, dest, src, assignmentLike);
+        }
+    };
+} // namespace
+
+std::vector<std::unique_ptr<ASTNode>> lowerBlockToStatements(const std::vector<IRInstruction>& instructions, const CallingConvention calling_convention)
+{
+    StatementLoweringContext context(instructions, calling_convention);
+    return context.lower();
 }
 } // namespace Decompiler

@@ -534,7 +534,7 @@ std::vector<IRInstruction> lift_div(uint64_t address, const std::vector<std::str
         return {};
     }
 
-    return { { "div", IRType::DIV, { RegisterOperand("eax"), RegisterOperand("eax"), parse_operand(operands[0]) }, address } };
+    return { { "div", IRType::DIV, { RegisterOperand("rax"), RegisterOperand("rax"), parse_operand(operands[0]) }, address } };
 }
 
 std::vector<IRInstruction> lift_push(uint64_t address, const std::vector<std::string>& operands)

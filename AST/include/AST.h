@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 
+#include "ASTExpression.h"
 #include "IRTypes.h"
 
 namespace Decompiler
@@ -17,17 +18,6 @@ struct ASTNode {
     virtual std::vector<std::string> print(int indent) const = 0;
 };
 
-struct TextNode : ASTNode {
-    std::string text;
-    explicit TextNode(std::string value) : text(std::move(value))
-    {
-    }
-    std::vector<std::string> print(int indent) const override
-    {
-        return { std::string(indent, ' ') + text };
-    }
-};
-
 struct SimpleBlockNode : ASTNode {
     size_t block_index = 0;
     std::vector<std::unique_ptr<ASTNode>> statements;
@@ -37,8 +27,40 @@ struct SimpleBlockNode : ASTNode {
 
 std::vector<std::unique_ptr<ASTNode>> lowerBlockToStatements(const std::vector<IRInstruction>& instructions, CallingConvention callingConvention);
 
+struct AssignmentNode : ASTNode {
+    std::unique_ptr<Expression> target;
+    std::unique_ptr<Expression> value;
+
+    AssignmentNode(std::unique_ptr<Expression> targetExpression, std::unique_ptr<Expression> valueExpression)
+        : target(std::move(targetExpression)), value(std::move(valueExpression))
+    {
+    }
+
+    std::vector<std::string> print(int indent) const override;
+};
+
+struct ReturnNode : ASTNode {
+    std::unique_ptr<Expression> value;
+
+    ReturnNode(std::unique_ptr<Expression> valueExpression = nullptr) : value(std::move(valueExpression))
+    {
+    }
+
+    std::vector<std::string> print(int indent) const override;
+};
+
+struct ExpressionStatementNode : ASTNode {
+    std::unique_ptr<Expression> expression;
+
+    ExpressionStatementNode(std::unique_ptr<Expression> value) : expression(std::move(value))
+    {
+    }
+
+    std::vector<std::string> print(int indent) const override;
+};
+
 struct IfNode : ASTNode {
-    std::string condition_expr;
+    std::unique_ptr<Expression> condition;
 
     std::vector<std::unique_ptr<ASTNode>> true_branch;
     std::vector<std::unique_ptr<ASTNode>> false_branch;
@@ -47,7 +69,7 @@ struct IfNode : ASTNode {
 };
 
 struct WhileNode : ASTNode {
-    std::string condition_expr;
+    std::unique_ptr<Expression> condition;
 
     std::vector<std::unique_ptr<ASTNode>> body;
 
@@ -55,7 +77,7 @@ struct WhileNode : ASTNode {
 };
 
 struct DoWhileNode : ASTNode {
-    std::string condition_expr;
+    std::unique_ptr<Expression> condition;
 
     std::vector<std::unique_ptr<ASTNode>> body;
 
@@ -63,9 +85,9 @@ struct DoWhileNode : ASTNode {
 };
 
 struct ForNode : ASTNode {
-    std::string init_expr;
-    std::string condition_expr;
-    std::string increment_expr;
+    std::unique_ptr<ASTNode> init;
+    std::unique_ptr<Expression> condition;
+    std::unique_ptr<ASTNode> increment;
     std::vector<std::unique_ptr<ASTNode>> body;
 
     std::vector<std::string> print(int indent) const override;

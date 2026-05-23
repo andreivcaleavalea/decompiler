@@ -1,26 +1,11 @@
 #include "AST.h"
 
-#include <cctype>
-#include <string>
 #include <vector>
 
 namespace Decompiler
 {
 namespace
 {
-    std::string lastTextLine(const ASTNode& node)
-    {
-        if (const auto* text = dynamic_cast<const TextNode*>(&node)) {
-            return text->text;
-        }
-        if (const auto* block = dynamic_cast<const SimpleBlockNode*>(&node)) {
-            if (!block->statements.empty()) {
-                return lastTextLine(*block->statements.back());
-            }
-        }
-        return {};
-    }
-
     const ASTNode* lastMeaningfulNode(const std::vector<std::unique_ptr<ASTNode>>& nodes)
     {
         for (size_t k = nodes.size(); k-- > 0;) {
@@ -31,25 +16,6 @@ namespace
         return nullptr;
     }
 
-    void removeLastText(std::vector<std::unique_ptr<ASTNode>>& nodes)
-    {
-        if (nodes.empty()) {
-            return;
-        }
-        if (dynamic_cast<TextNode*>(nodes.back().get())) {
-            nodes.pop_back();
-            return;
-        }
-        if (auto* block = dynamic_cast<SimpleBlockNode*>(nodes.back().get())) {
-            if (!block->statements.empty()) {
-                block->statements.pop_back();
-            }
-            if (block->statements.empty()) {
-                nodes.pop_back();
-            }
-        }
-    }
-
     void stripTrailingContinues(std::vector<std::unique_ptr<ASTNode>>& nodes)
     {
         while (!nodes.empty() && dynamic_cast<const ContinueNode*>(nodes.back().get())) {
@@ -57,48 +23,94 @@ namespace
         }
     }
 
-    std::string assignmentTarget(const std::string& line)
+    const Expression* assignmentTargetExpression(const ASTNode* node)
     {
-        const auto eq = line.find(" = ");
-        if (eq == std::string::npos) {
-            return {};
+        if (const auto* assignment = dynamic_cast<const AssignmentNode*>(node)) {
+            return assignment->target.get();
         }
-        const std::string lhs = line.substr(0, eq);
-        if (lhs.empty()) {
-            return {};
-        }
-        for (const unsigned char c : lhs) {
-            if (!std::isalnum(c) && c != '_') {
-                return {};
+        if (const auto* block = dynamic_cast<const SimpleBlockNode*>(node)) {
+            if (!block->statements.empty()) {
+                return assignmentTargetExpression(block->statements.back().get());
             }
         }
-        return lhs;
+        return nullptr;
     }
 
-    std::string modifiedVariable(const std::string& line)
+    const Expression* modifiedExpression(const ASTNode* node)
     {
-        if (line.ends_with("++")) {
-            return line.substr(0, line.size() - 2);
+        if (const auto* assignment = dynamic_cast<const AssignmentNode*>(node)) {
+            return assignment->target.get();
         }
-        if (line.ends_with("--")) {
-            return line.substr(0, line.size() - 2);
-        }
-        return assignmentTarget(line);
-    }
-
-    bool mentionsVariable(const std::string& expr, const std::string& var)
-    {
-        size_t pos = 0;
-        while ((pos = expr.find(var, pos)) != std::string::npos) {
-            const bool leftOk = pos == 0 || (!std::isalnum(static_cast<unsigned char>(expr[pos - 1])) && expr[pos - 1] != '_');
-            const bool rightOk =
-                  pos + var.size() >= expr.size() || (!std::isalnum(static_cast<unsigned char>(expr[pos + var.size()])) && expr[pos + var.size()] != '_');
-            if (leftOk && rightOk) {
-                return true;
+        if (const auto* expressionStatement = dynamic_cast<const ExpressionStatementNode*>(node)) {
+            const auto* unary = dynamic_cast<const UnaryExpression*>(expressionStatement->expression.get());
+            if (unary != nullptr && (unary->op == UnaryOp::PostIncrement || unary->op == UnaryOp::PostDecrement || unary->op == UnaryOp::PreIncrement ||
+                                     unary->op == UnaryOp::PreDecrement)) {
+                return unary->operand.get();
             }
-            pos += var.size();
         }
-        return false;
+        if (const auto* block = dynamic_cast<const SimpleBlockNode*>(node)) {
+            if (!block->statements.empty()) {
+                return modifiedExpression(block->statements.back().get());
+            }
+        }
+        return nullptr;
+    }
+
+    bool conditionReferencesInitTarget(const Expression* condition, const Expression* initTarget)
+    {
+        const auto* variable = dynamic_cast<const VariableExpression*>(initTarget);
+        return condition != nullptr && variable != nullptr && condition->referencesVariable(variable->name);
+    }
+
+    std::unique_ptr<ASTNode> takeLastStatement(std::vector<std::unique_ptr<ASTNode>>& nodes)
+    {
+        if (nodes.empty()) {
+            return nullptr;
+        }
+
+        if (auto* block = dynamic_cast<SimpleBlockNode*>(nodes.back().get())) {
+            if (block->statements.empty()) {
+                return nullptr;
+            }
+
+            auto statement = std::move(block->statements.back());
+            block->statements.pop_back();
+            if (block->statements.empty()) {
+                nodes.pop_back();
+            }
+            return statement;
+        }
+
+        auto statement = std::move(nodes.back());
+        nodes.pop_back();
+        return statement;
+    }
+
+    struct TakenInitializer {
+        std::unique_ptr<ASTNode> statement;
+        bool removed_node = false;
+    };
+
+    TakenInitializer takeInitializerStatement(std::vector<std::unique_ptr<ASTNode>>& nodes, const size_t index)
+    {
+        if (dynamic_cast<AssignmentNode*>(nodes[index].get())) {
+            auto initializer = std::move(nodes[index]);
+            nodes.erase(nodes.begin() + static_cast<ptrdiff_t>(index));
+            return { std::move(initializer), true };
+        }
+
+        auto* block = dynamic_cast<SimpleBlockNode*>(nodes[index].get());
+        if (block == nullptr || block->statements.empty()) {
+            return {};
+        }
+
+        auto initializer = std::move(block->statements.back());
+        block->statements.pop_back();
+        if (block->statements.empty()) {
+            nodes.erase(nodes.begin() + static_cast<ptrdiff_t>(index));
+            return { std::move(initializer), true };
+        }
+        return { std::move(initializer), false };
     }
 } // namespace
 
@@ -125,42 +137,41 @@ void restructureForLoops(std::vector<std::unique_ptr<ASTNode>>& nodes)
             continue;
         }
 
-        const std::string initLine = lastTextLine(*nodes[i - 1]);
-        const std::string initVar  = assignmentTarget(initLine);
-        if (initVar.empty() || !mentionsVariable(whileNode->condition_expr, initVar)) {
+        const Expression* initTarget = assignmentTargetExpression(nodes[i - 1].get());
+        if (!conditionReferencesInitTarget(whileNode->condition.get(), initTarget)) {
             ++i;
             continue;
         }
 
         const ASTNode* lastMeaningful = lastMeaningfulNode(whileNode->body);
-        if (!lastMeaningful) {
-            ++i;
-            continue;
-        }
-        const std::string incLine = lastTextLine(*lastMeaningful);
-        if (modifiedVariable(incLine) != initVar) {
+        if (lastMeaningful == nullptr) {
             ++i;
             continue;
         }
 
-        auto forNode            = std::make_unique<ForNode>();
-        forNode->init_expr      = initLine;
-        forNode->condition_expr = whileNode->condition_expr;
-        forNode->increment_expr = incLine;
-        forNode->body           = std::move(whileNode->body);
-        stripTrailingContinues(forNode->body);
-        removeLastText(forNode->body);
+        const Expression* incrementTarget = modifiedExpression(lastMeaningful);
+        if (!sameVariableExpression(initTarget, incrementTarget)) {
+            ++i;
+            continue;
+        }
 
-        if (dynamic_cast<TextNode*>(nodes[i - 1].get())) {
-            nodes.erase(nodes.begin() + static_cast<ptrdiff_t>(i - 1));
+        auto initializer = takeInitializerStatement(nodes, i - 1);
+        if (!initializer.statement) {
+            ++i;
+            continue;
+        }
+
+        if (initializer.removed_node) {
             --i;
-        } else if (auto* block = dynamic_cast<SimpleBlockNode*>(nodes[i - 1].get())) {
-            block->statements.pop_back();
-            if (block->statements.empty()) {
-                nodes.erase(nodes.begin() + static_cast<ptrdiff_t>(i - 1));
-                --i;
-            }
         }
+
+        auto forNode = std::make_unique<ForNode>();
+        forNode->init = std::move(initializer.statement);
+        forNode->body = std::move(whileNode->body);
+        stripTrailingContinues(forNode->body);
+        forNode->increment = takeLastStatement(forNode->body);
+
+        forNode->condition = std::move(whileNode->condition);
 
         nodes[i] = std::move(forNode);
         ++i;

@@ -1,9 +1,6 @@
 #include "AST.h"
 
 #include <algorithm>
-#include <cctype>
-#include <optional>
-#include <unordered_map>
 #include <vector>
 
 #include "ASTDetail.h"
@@ -47,6 +44,56 @@ namespace
         return expression;
     }
 
+    std::string conditionText(const IfNode& node)
+    {
+        return node.condition ? node.condition->render() : std::string{};
+    }
+
+    std::string conditionText(const WhileNode& node)
+    {
+        return node.condition ? node.condition->render() : std::string{};
+    }
+
+    std::string conditionText(const DoWhileNode& node)
+    {
+        return node.condition ? node.condition->render() : std::string{};
+    }
+
+    std::string inlineStatementText(const ASTNode* node)
+    {
+        if (node == nullptr) {
+            return {};
+        }
+        if (const auto* assignment = dynamic_cast<const AssignmentNode*>(node)) {
+            const std::string target = assignment->target ? assignment->target->render() : std::string{};
+            const std::string value  = assignment->value ? assignment->value->render() : std::string{};
+            return target + " = " + value;
+        }
+        if (const auto* expression = dynamic_cast<const ExpressionStatementNode*>(node)) {
+            return expression->expression ? expression->expression->render() : std::string{};
+        }
+        const auto lines = node->print(0);
+        if (lines.empty()) {
+            return {};
+        }
+        return trimCopy(lines.front());
+    }
+
+    std::string forInitText(const ForNode& node)
+    {
+        return inlineStatementText(node.init.get());
+    }
+
+    std::string forConditionText(const ForNode& node)
+    {
+        return node.condition ? node.condition->render() : std::string{};
+    }
+
+    std::string forIncrementText(const ForNode& node)
+    {
+        return inlineStatementText(node.increment.get());
+    }
+
     bool isContinueLine(const std::string& line)
     {
         return trimCopy(line) == "continue";
@@ -57,7 +104,7 @@ namespace
 
     std::vector<std::string> printIfWithAssumptions(const IfNode& node, const int indent, const std::vector<std::string>& assumptions)
     {
-        const std::string condition = simplifyExpressionText(node.condition_expr);
+        const std::string condition = simplifyExpressionText(conditionText(node));
         if (containsCondition(assumptions, condition)) {
             return printNodesWithAssumptions(node.true_branch, indent, assumptions);
         }
@@ -125,6 +172,30 @@ std::vector<std::string> SimpleBlockNode::print(int indent) const
     return result;
 }
 
+std::vector<std::string> AssignmentNode::print(int indent) const
+{
+    const std::string targetText = target ? target->render() : std::string{};
+    const std::string valueText  = value ? value->render() : std::string{};
+    return { std::string(indent, ' ') + targetText + " = " + valueText };
+}
+
+std::vector<std::string> ReturnNode::print(int indent) const
+{
+    const std::string spaces(indent, ' ');
+    if (!value) {
+        return { spaces + "return" };
+    }
+    return { spaces + "return " + value->render() };
+}
+
+std::vector<std::string> ExpressionStatementNode::print(int indent) const
+{
+    if (!expression) {
+        return {};
+    }
+    return { std::string(indent, ' ') + expression->render() };
+}
+
 std::vector<std::string> IfNode::print(int indent) const
 {
     return printIfWithAssumptions(*this, indent, {});
@@ -134,7 +205,7 @@ std::vector<std::string> WhileNode::print(int indent) const
 {
     std::vector<std::string> result;
     std::string spaces(indent, ' ');
-    result.push_back(spaces + "while (" + condition_expr + ") {");
+    result.push_back(spaces + "while (" + conditionText(*this) + ") {");
 
     for (const auto& node : body) {
         auto lines = node->print(indent + 4);
@@ -162,7 +233,7 @@ std::vector<std::string> DoWhileNode::print(int indent) const
         result.pop_back();
     }
 
-    result.push_back(spaces + "} while (" + condition_expr + ");");
+    result.push_back(spaces + "} while (" + conditionText(*this) + ");");
     return result;
 }
 
@@ -170,7 +241,7 @@ std::vector<std::string> ForNode::print(int indent) const
 {
     const std::string spaces(indent, ' ');
     std::vector<std::string> result;
-    result.push_back(spaces + "for (" + init_expr + "; " + condition_expr + "; " + increment_expr + ") {");
+    result.push_back(spaces + "for (" + forInitText(*this) + "; " + forConditionText(*this) + "; " + forIncrementText(*this) + ") {");
     for (const auto& node : body) {
         for (const auto& line : node->print(indent + 4)) {
             result.push_back(line);
