@@ -6,6 +6,7 @@
 #include "ASTDetail.h"
 #include "ControlGraphFlow.h"
 #include "Dominators.h"
+#include "IRPatternRecognition.h"
 #include "SSA.h"
 #include "StackVariableRecovery.h"
 
@@ -61,6 +62,10 @@ void buildFunctionIR(DecompilerFunction& function, DecompilerProgram& program, c
     function.graph = buildCFG(instructions);
     if (function.graph.blocks.empty()) {
         return;
+    }
+
+    for (auto& block : function.graph.blocks) {
+        recognizeOptimizedDivision(block.instructions);
     }
 
     recoverStackVariables(function.graph, stackFrameLayoutForCallingConvention(function.calling_convention));

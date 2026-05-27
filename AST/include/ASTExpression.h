@@ -8,7 +8,7 @@
 
 namespace Decompiler
 {
-enum class BinaryOp { Add, Sub, Mul, Div, BitAnd, BitOr, BitXor, Shl, Shr };
+enum class BinaryOp { Add, Sub, Mul, Div, Mod, BitAnd, BitOr, BitXor, Shl, Shr };
 
 enum class ComparisonOp { Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual, UnsignedLess, UnsignedLessEqual, UnsignedGreater, UnsignedGreaterEqual };
 

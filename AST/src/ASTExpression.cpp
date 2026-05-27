@@ -8,7 +8,7 @@ namespace
 {
     bool isRightAssociativeUnsafe(const BinaryOp op)
     {
-        return op == BinaryOp::Sub || op == BinaryOp::Div || op == BinaryOp::Shl || op == BinaryOp::Shr;
+        return op == BinaryOp::Sub || op == BinaryOp::Div || op == BinaryOp::Mod || op == BinaryOp::Shl || op == BinaryOp::Shr;
     }
 
     std::string renderBinaryChild(const BinaryOp parentOp, const Expression* child, const bool isRightChild)
@@ -77,6 +77,7 @@ int binaryOpPrecedence(const BinaryOp op)
         return 5;
     case BinaryOp::Mul:
     case BinaryOp::Div:
+    case BinaryOp::Mod:
         return 6;
     }
     return 0;
@@ -112,6 +113,8 @@ std::string binaryOpText(const BinaryOp op)
         return "*";
     case BinaryOp::Div:
         return "/";
+    case BinaryOp::Mod:
+        return "%";
     case BinaryOp::BitAnd:
         return "&";
     case BinaryOp::BitOr:

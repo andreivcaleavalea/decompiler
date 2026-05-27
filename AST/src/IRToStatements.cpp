@@ -66,6 +66,8 @@ namespace
             return BinaryOp::Mul;
         case IRType::DIV:
             return BinaryOp::Div;
+        case IRType::MOD:
+            return BinaryOp::Mod;
         case IRType::AND:
             return BinaryOp::BitAnd;
         case IRType::OR:

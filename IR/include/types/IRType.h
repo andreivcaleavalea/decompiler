@@ -14,6 +14,7 @@ enum class IRType {
     SUB,
     MUL,
     DIV,
+    MOD,
     NEG,
 
     AND,
@@ -64,6 +65,8 @@ inline std::string typeToString(const IRType type)
         return "MUL";
     case IRType::DIV:
         return "DIV";
+    case IRType::MOD:
+        return "MOD";
     case IRType::NEG:
         return "NEG";
     case IRType::AND:

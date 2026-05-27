@@ -41,6 +41,7 @@ inline IRCategory categoryOf(const IRType type)
     case IRType::SUB:
     case IRType::MUL:
     case IRType::DIV:
+    case IRType::MOD:
     case IRType::NEG:
         return IRCategory::Arithmetic;
 
@@ -186,6 +187,7 @@ inline bool isBinaryExpression(const IRType type)
     case IRType::SUB:
     case IRType::MUL:
     case IRType::DIV:
+    case IRType::MOD:
     case IRType::AND:
     case IRType::OR:
     case IRType::XOR:

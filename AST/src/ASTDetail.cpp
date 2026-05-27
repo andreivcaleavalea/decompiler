@@ -56,7 +56,22 @@ std::string normalizeImmediateForDisplay(const std::string& operand)
         const std::string digits = value.substr(2);
         if (!digits.empty() && digits.size() <= 16 && std::ranges::all_of(digits, [](const unsigned char c) { return std::isxdigit(c) != 0; })) {
             try {
-                const auto parsed         = std::stoull(digits, nullptr, 16);
+                const auto parsed = std::stoull(digits, nullptr, 16);
+
+                if (!isNegative) {
+                    int64_t signedValue = static_cast<int64_t>(parsed);
+                    if (digits.size() <= 2 && parsed >= 0x80ULL) {
+                        signedValue = static_cast<int64_t>(static_cast<int8_t>(parsed));
+                    } else if (digits.size() <= 4 && parsed >= 0x8000ULL) {
+                        signedValue = static_cast<int64_t>(static_cast<int16_t>(parsed));
+                    } else if (digits.size() <= 8 && parsed >= 0x80000000ULL) {
+                        signedValue = static_cast<int64_t>(static_cast<int32_t>(parsed));
+                    }
+                    if (signedValue < 0) {
+                        return std::to_string(signedValue);
+                    }
+                }
+
                 const std::string decimal = std::to_string(parsed);
                 return isNegative ? "-" + decimal : decimal;
             } catch (...) {
@@ -188,7 +203,7 @@ namespace
                 return lhs + " - " + rhs;
             }
             if (inst.type == IRType::AND || inst.type == IRType::OR || inst.type == IRType::XOR || inst.type == IRType::SHL || inst.type == IRType::SHR ||
-                inst.type == IRType::SAR || inst.type == IRType::MUL || inst.type == IRType::DIV) {
+                inst.type == IRType::SAR || inst.type == IRType::MUL || inst.type == IRType::DIV || inst.type == IRType::MOD) {
                 const std::string lhs =
                       resolveOperandFromDefinitions(instrs, i, normalizedValueForDisplay(IRProperties::operandAt(inst, 1).value, layout), layout, active);
                 const std::string rhs =
@@ -201,6 +216,7 @@ namespace
                                        : inst.type == IRType::SHL ? "<<"
                                        : inst.type == IRType::MUL ? "*"
                                        : inst.type == IRType::DIV ? "/"
+                                       : inst.type == IRType::MOD ? "%"
                                                                   : ">>";
                 return "(" + lhs + " " + op + " " + rhs + ")";
             }

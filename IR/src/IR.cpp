@@ -534,7 +534,12 @@ std::vector<IRInstruction> lift_div(uint64_t address, const std::vector<std::str
         return {};
     }
 
-    return { { "div", IRType::DIV, { RegisterOperand("rax"), RegisterOperand("rax"), parse_operand(operands[0]) }, address } };
+    const IROperand divisor = parse_operand(operands[0]);
+    // MOD must come before DIV so SSA renames rax as the dividend in both
+    return {
+        { "mod", IRType::MOD, { RegisterOperand("rdx"), RegisterOperand("rax"), divisor }, address },
+        { "div", IRType::DIV, { RegisterOperand("rax"), RegisterOperand("rax"), divisor }, address },
+    };
 }
 
 std::vector<IRInstruction> lift_push(uint64_t address, const std::vector<std::string>& operands)
@@ -561,7 +566,84 @@ std::vector<IRInstruction> lift_lea(uint64_t address, const std::vector<std::str
         return {};
     }
 
-    return { { "lea", IRType::LEA, { parse_operand(operands[0]), parse_operand(operands[1]) }, address } };
+    const IROperand dest = parse_operand(operands[0]);
+    const IROperand src  = parse_operand(operands[1]);
+
+    if (!src.memory.has_value()) {
+        return { { "lea", IRType::LEA, { dest, src }, address } };
+    }
+
+    const IRMemoryAddress& mem = *src.memory;
+
+    // Keep as LEA: variable recovery passes handle these
+    if (mem.ripRelative || mem.base == "rbp" || mem.base == "rsp") {
+        return { { "lea", IRType::LEA, { dest, src }, address } };
+    }
+
+    // Keep as LEA: emitting SHL/MUL before ADD would clobber the base register when dest == base
+    if (!mem.index.empty() && mem.scale > 1 && dest.value == mem.base) {
+        return { { "lea", IRType::LEA, { dest, src }, address } };
+    }
+
+    // Pure absolute address (no registers)
+    if (mem.base.empty() && mem.index.empty()) {
+        const std::string addrStr = mem.absolute.has_value() ? std::to_string(*mem.absolute) : std::to_string(mem.displacement);
+        return { { "load_const", IRType::LOAD_CONST, { dest, ImmediateOperand(addrStr) }, address } };
+    }
+
+    std::vector<IRInstruction> result;
+    bool destHasValue = false;
+
+    if (!mem.index.empty()) {
+        const IROperand indexReg = RegisterOperand(mem.index);
+        const int scale          = mem.scale <= 0 ? 1 : mem.scale;
+
+        // Emit scaled index into dest
+        if (scale == 2) {
+            result.push_back({ "shl", IRType::SHL, { dest, indexReg, ImmediateOperand(static_cast<uint64_t>(1)) }, address });
+            destHasValue = true;
+        } else if (scale == 4) {
+            result.push_back({ "shl", IRType::SHL, { dest, indexReg, ImmediateOperand(static_cast<uint64_t>(2)) }, address });
+            destHasValue = true;
+        } else if (scale == 8) {
+            result.push_back({ "shl", IRType::SHL, { dest, indexReg, ImmediateOperand(static_cast<uint64_t>(3)) }, address });
+            destHasValue = true;
+        } else if (scale > 1) {
+            result.push_back({ "mul", IRType::MUL, { dest, indexReg, ImmediateOperand(static_cast<uint64_t>(scale)) }, address });
+            destHasValue = true;
+        }
+
+        // Combine scaled index with base
+        if (!mem.base.empty()) {
+            const IROperand baseReg   = RegisterOperand(mem.base);
+            const IROperand scaledIdx = destHasValue ? dest : indexReg;
+            result.push_back({ "add", IRType::ADD, { dest, baseReg, scaledIdx }, address });
+            destHasValue = true;
+        } else if (!destHasValue) {
+            // scale == 1, no base: assign index to dest
+            result.push_back({ "assign", IRType::ASSIGN, { dest, indexReg }, address });
+            destHasValue = true;
+        }
+        // scale > 1, no base: dest already holds scaled index
+    }
+
+    // Apply displacement
+    if (mem.displacement != 0) {
+        const IROperand lhs = destHasValue ? dest : RegisterOperand(mem.base);
+        if (mem.displacement > 0) {
+            result.push_back({ "add", IRType::ADD, { dest, lhs, ImmediateOperand(static_cast<uint64_t>(mem.displacement)) }, address });
+        } else {
+            result.push_back({ "sub", IRType::SUB, { dest, lhs, ImmediateOperand(static_cast<uint64_t>(-mem.displacement)) }, address });
+        }
+        destHasValue = true;
+    }
+
+    // Nothing emitted: just base, no index, no displacement
+    if (result.empty()) {
+        result.push_back({ "assign", IRType::ASSIGN, { dest, RegisterOperand(mem.base) }, address });
+    }
+
+    return result;
 }
 
 std::vector<IRInstruction> lift_sext(uint64_t address, const std::vector<std::string>& operands)

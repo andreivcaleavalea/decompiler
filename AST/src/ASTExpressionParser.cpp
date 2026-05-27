@@ -282,7 +282,7 @@ namespace
         {
             const std::vector<std::pair<std::string_view, BinaryOp>> operators = {
                 { " | ", BinaryOp::BitOr }, { " ^ ", BinaryOp::BitXor }, { " & ", BinaryOp::BitAnd }, { " << ", BinaryOp::Shl }, { " >> ", BinaryOp::Shr },
-                { " + ", BinaryOp::Add },   { " - ", BinaryOp::Sub },    { " * ", BinaryOp::Mul },    { " / ", BinaryOp::Div },
+                { " + ", BinaryOp::Add },   { " - ", BinaryOp::Sub },    { " * ", BinaryOp::Mul },    { " / ", BinaryOp::Div },  { " % ", BinaryOp::Mod },
             };
 
             const auto binaryOperator = findTopLevelOperator(expression, operators);
