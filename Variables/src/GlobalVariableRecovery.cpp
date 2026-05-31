@@ -64,7 +64,7 @@ namespace
 
     bool isGlobalMemoryOperand(const IROperand& operand)
     {
-        return operand.type == OpType::MEM && operand.memory.has_value() && operand.memory->absolute.has_value();
+        return operand.isHeapDeref() && operand.heapDeref.absolute.has_value();
     }
 
     void convertOperand(IROperand& operand, GlobalSymbolTable& table)
@@ -73,17 +73,27 @@ namespace
             return;
         }
 
-        const uint64_t address   = *operand.memory->absolute;
-        const size_t sizeBytes   = operand.memory->sizeBytes;
+        const uint64_t address   = *operand.heapDeref.absolute;
+        const size_t sizeBytes   = operand.heapDeref.sizeBytes;
         const std::string symbol = resolveGlobalSymbol(table, address, sizeBytes);
         if (symbol.empty()) {
             return;
         }
 
-        operand.type  = OpType::REG;
-        operand.value = symbol;
-        operand.memory.reset();
-        operand.kind = OperandKind::GlobalVar;
+        operand.tag       = OperandTag::GlobalVar;
+        operand.name      = symbol;
+        operand.sizeBytes = sizeBytes;
+        operand.heapDeref = {};
+    }
+
+    bool instructionHasXmmOperand(const IRInstruction& instruction)
+    {
+        for (const auto& operand : instruction.operands) {
+            if (operand.isAnyReg() && operand.name.starts_with("xmm")) {
+                return true;
+            }
+        }
+        return false;
     }
 } // namespace
 
@@ -91,8 +101,19 @@ void recoverGlobalVariables(Graph& cfg, GlobalSymbolTable& table)
 {
     for (auto& block : cfg.blocks) {
         for (auto& instruction : block.instructions) {
+            const bool floatContext = instructionHasXmmOperand(instruction);
             for (auto& operand : instruction.operands) {
+                if (!isGlobalMemoryOperand(operand)) {
+                    continue;
+                }
+                const uint64_t address = *operand.heapDeref.absolute;
                 convertOperand(operand, table);
+                if (floatContext) {
+                    const auto it = table.referenced.find(address);
+                    if (it != table.referenced.end()) {
+                        it->second.isFloat = true;
+                    }
+                }
             }
         }
     }

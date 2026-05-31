@@ -36,7 +36,7 @@ struct IRInstruction {
         std::ostringstream out;
 
         out << "0x" << std::hex << std::setw(8) << std::setfill('0') << address << std::dec;
-        out << ": " << typeToString(type);
+        out << ": " << op;
 
         if (condition != ConditionCode::None) {
             out << " [cond=" << conditionToOperator(condition) << "]";
@@ -44,8 +44,8 @@ struct IRInstruction {
 
         for (size_t i = 0; i < operands.size(); ++i) {
             out << (i == 0 ? " " : ", ");
-            const auto& op = operands[i];
-            out << (op.value.empty() ? "<empty>" : op.value);
+            const auto& operand = operands[i];
+            out << (operand.name.empty() ? "<empty>" : operand.name);
         }
 
         return out.str();

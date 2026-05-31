@@ -54,5 +54,6 @@ namespace Decompiler {
         uint64_t address = 0;
         size_t sizeBytes = 0;
         std::string symbol;
+        bool isFloat = false;
     };
 }

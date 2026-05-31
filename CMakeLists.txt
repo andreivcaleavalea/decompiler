@@ -1,4 +1,4 @@
-file(GLOB_RECURSE DECOMPILER_SOURCES CONFIGURE_DEPENDS "Decompiler.cpp" "*/src/*.cpp")
+file(GLOB_RECURSE DECOMPILER_SOURCES CONFIGURE_DEPENDS "Decompiler.cpp" "*/src/*.cpp" "*/*/src/*.cpp" "IR/Optimizations/*.cpp" "IR/Data/*.cpp")
 file(GLOB_RECURSE DECOMPILER_HEADERS CONFIGURE_DEPENDS "Decompiler.h" "*/include/*.h")
 
 add_library(DecompilerLib STATIC ${DECOMPILER_SOURCES} ${DECOMPILER_HEADERS})
@@ -9,11 +9,15 @@ target_include_directories(DecompilerLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/Cont
 target_include_directories(DecompilerLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/Debug/include)
 target_include_directories(DecompilerLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/Decompile/include)
 target_include_directories(DecompilerLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/Dominators/include)
-target_include_directories(DecompilerLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/IR/include)
+target_include_directories(DecompilerLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/IR)
+target_include_directories(DecompilerLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/IR/Data)
+target_include_directories(DecompilerLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/IR/Optimizations)
 target_include_directories(DecompilerLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/SSA/include)
 target_include_directories(DecompilerLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/Symbols/include)
 target_include_directories(DecompilerLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/Types/include)
 target_include_directories(DecompilerLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/Optimizations/include)
 target_include_directories(DecompilerLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/Variables/include)
+target_include_directories(DecompilerLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/TypeInference/include)
+target_include_directories(DecompilerLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/Platform/include)
 
 target_link_libraries(DecompilerLib PUBLIC LLVMDemangle)

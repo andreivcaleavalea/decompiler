@@ -12,8 +12,8 @@ void removeUnusedGlobals(GlobalSymbolTable& table, const std::vector<const Decom
         for (const auto& block : function->graph.blocks) {
             for (const auto& instruction : block.instructions) {
                 for (const auto& operand : instruction.operands) {
-                    if (operand.kind == OperandKind::GlobalVar && !operand.value.empty()) {
-                        usedSymbols.insert(operand.value);
+                    if (operand.tag == OperandTag::GlobalVar && !operand.name.empty()) {
+                        usedSymbols.insert(operand.name);
                     }
                 }
             }

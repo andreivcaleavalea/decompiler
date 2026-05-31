@@ -16,15 +16,15 @@ static IRInstruction makePhi(std::string variable, size_t inputCount)
         inputs.push_back(ssaVersionName(variable, 0));
     }
 
-    return { "phi", IRType::PHI, { { OpType::REG, variable }, { OpType::REG, joinPhiInputs(inputs) } }, 0 };
+    return { "phi", IRType::PHI, { { OperandTag::Register, variable }, { OperandTag::Register, joinPhiInputs(inputs) } }, 0 };
 }
 
 static void collectDefinitionBlocks(Graph& cfg, std::unordered_map<std::string, std::set<size_t>>& definitionsByVariable)
 {
     for (auto& block : cfg.blocks) {
         for (auto& instruction : block.instructions) {
-            if (IRProperties::createsNewValue(instruction) && instruction.operands[0].kind == OperandKind::RawRegister) {
-                definitionsByVariable[ssaBaseName(instruction.operands[0].value)].insert(block.index);
+            if (IRProperties::createsNewValue(instruction) && instruction.operands[0].tag == OperandTag::Register) {
+                definitionsByVariable[ssaBaseName(instruction.operands[0].name)].insert(block.index);
             }
         }
     }
@@ -36,7 +36,7 @@ static bool blockAlreadyHasPhi(InsBlock& block, std::string variable)
         if (!IRProperties::isPhi(instruction)) {
             break;
         }
-        if (ssaBaseName(instruction.operands[0].value) == variable) {
+        if (ssaBaseName(instruction.operands[0].name) == variable) {
             return true;
         }
     }
@@ -141,8 +141,8 @@ static void insertBeforeTerminator(InsBlock& block, IRInstruction copy)
 static void addCopiesForPhi(Graph& cfg, size_t blockId, IRInstruction phi)
 {
     auto& block                     = cfg.blocks[blockId];
-    std::string variable            = ssaBaseName(phi.operands[0].value);
-    std::vector<std::string> inputs = splitPhiInputs(phi.operands[1].value);
+    std::string variable            = ssaBaseName(phi.operands[0].name);
+    std::vector<std::string> inputs = splitPhiInputs(phi.operands[1].name);
     if (inputs.size() < block.predecessors.size()) {
         inputs.resize(block.predecessors.size(), ssaVersionName(variable, 0));
     }
@@ -154,7 +154,7 @@ static void addCopiesForPhi(Graph& cfg, size_t blockId, IRInstruction phi)
         }
 
         std::string incoming = inputs[predIndex].empty() ? ssaVersionName(variable, 0) : inputs[predIndex];
-        IRInstruction copy   = { "assign", IRType::ASSIGN, { SsaTempOperand(phi.operands[0].value), SsaTempOperand(incoming) }, 0 };
+        IRInstruction copy   = { "assign", IRType::ASSIGN, { SsaTempOperand(phi.operands[0].name), SsaTempOperand(incoming) }, 0 };
         insertBeforeTerminator(cfg.blocks[predecessor], copy);
     }
 }

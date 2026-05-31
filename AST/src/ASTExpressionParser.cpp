@@ -1,6 +1,8 @@
 #include "ASTExpression.h"
 
+#include <array>
 #include <optional>
+#include <string_view>
 #include <utility>
 
 namespace Decompiler
@@ -15,6 +17,47 @@ namespace
         }
         const auto last = value.find_last_not_of(' ');
         return value.substr(first, last - first + 1);
+    }
+
+    size_t firstPrimaryLength(const std::string& text)
+    {
+        size_t i = 0;
+        while (i < text.size() && text[i] == '*') {
+            ++i;
+        }
+        if (i >= text.size()) {
+            return 0;
+        }
+        if (text[i] == '(') {
+            int depth = 0;
+            for (; i < text.size(); ++i) {
+                if (text[i] == '(') {
+                    ++depth;
+                } else if (text[i] == ')') {
+                    --depth;
+                    if (depth == 0) {
+                        return i + 1;
+                    }
+                }
+            }
+            return text.size();
+        }
+        while (i < text.size() && (std::isalnum(static_cast<unsigned char>(text[i])) != 0 || text[i] == '_')) {
+            ++i;
+        }
+        return i;
+    }
+
+    bool isKnownTypeName(const std::string& name)
+    {
+        static constexpr std::array<std::string_view, 16> types = { "double",  "float",   "int",     "unsigned", "char",     "void",     "int8_t", "int16_t",
+                                                                    "int32_t", "int64_t", "uint8_t", "uint16_t", "uint32_t", "uint64_t", "long",   "short" };
+        for (const auto type : types) {
+            if (name == type) {
+                return true;
+            }
+        }
+        return false;
     }
 
     bool isIdentifierText(const std::string& text)
@@ -32,6 +75,28 @@ namespace
             if (std::isalnum(c) == 0 && c != '_') {
                 return false;
             }
+        }
+        return true;
+    }
+
+    bool isCppQualifiedNameText(const std::string& text)
+    {
+        if (text.empty()) {
+            return false;
+        }
+        const unsigned char first = static_cast<unsigned char>(text.front());
+        if (std::isdigit(first) != 0) {
+            return false;
+        }
+        if (first == '+' || first == '-' || first == '/' || first == '|') {
+            return false;
+        }
+        for (const char ch : text) {
+            const unsigned char c = static_cast<unsigned char>(ch);
+            if (std::isalnum(c) || c == '_' || c == ':' || c == '<' || c == '>' || c == '&' || c == '*' || c == '~' || c == ' ') {
+                continue;
+            }
+            return false;
         }
         return true;
     }
@@ -111,6 +176,9 @@ namespace
                 return ExpressionParser(unwrapped).parse();
             }
 
+            if (expression.size() >= 2 && expression.front() == '"' && expression.back() == '"') {
+                return std::make_unique<ConstantExpression>(expression);
+            }
             if (isIdentifierText(expression)) {
                 return std::make_unique<VariableExpression>(expression);
             }
@@ -118,8 +186,20 @@ namespace
                 return std::make_unique<ConstantExpression>(expression);
             }
 
+            if (expression.starts_with("*") && firstPrimaryLength(expression) == expression.size()) {
+                if (auto operand = ExpressionParser(expression.substr(1)).parse()) {
+                    return std::make_unique<UnaryExpression>(UnaryOp::Dereference, std::move(operand));
+                }
+            }
+
+            if (auto cast = parseCast()) {
+                return cast;
+            }
             if (auto call = parseCall()) {
                 return call;
+            }
+            if (auto subscript = parseSubscript()) {
+                return subscript;
             }
             if (auto comparison = parseComparison()) {
                 return comparison;
@@ -135,6 +215,39 @@ namespace
 
       private:
         std::string expression;
+
+        std::unique_ptr<Expression> parseCast() const
+        {
+            if (expression.empty() || expression.front() != '(') {
+                return nullptr;
+            }
+            int depth         = 0;
+            size_t closeParen = std::string::npos;
+            for (size_t i = 0; i < expression.size(); ++i) {
+                if (expression[i] == '(') {
+                    ++depth;
+                } else if (expression[i] == ')') {
+                    --depth;
+                    if (depth == 0) {
+                        closeParen = i;
+                        break;
+                    }
+                }
+            }
+            if (closeParen == std::string::npos || closeParen + 1 >= expression.size()) {
+                return nullptr;
+            }
+
+            const std::string typeName = trimCopy(expression.substr(1, closeParen - 1));
+            if (!isKnownTypeName(typeName)) {
+                return nullptr;
+            }
+            auto operand = ExpressionParser(expression.substr(closeParen + 1)).parse();
+            if (!operand) {
+                return nullptr;
+            }
+            return std::make_unique<CastExpression>(typeName, std::move(operand));
+        }
 
         static std::string unwrapOuterParentheses(const std::string& text)
         {
@@ -240,7 +353,7 @@ namespace
             }
 
             const std::string callee = trimCopy(expression.substr(0, *openParen));
-            if (!isIdentifierText(callee)) {
+            if (!isIdentifierText(callee) && !isCppQualifiedNameText(callee)) {
                 return nullptr;
             }
 
@@ -298,6 +411,28 @@ namespace
                 return nullptr;
             }
             return std::make_unique<BinaryExpression>(binaryOperator->second, std::move(lhsExpression), std::move(rhsExpression));
+        }
+
+        std::unique_ptr<Expression> parseSubscript() const
+        {
+            if (!expression.ends_with("]")) {
+                return nullptr;
+            }
+            const auto lb = expression.rfind('[');
+            if (lb == std::string::npos || lb == 0) {
+                return nullptr;
+            }
+            const std::string arrayPart = trimCopy(expression.substr(0, lb));
+            if (!isIdentifierText(arrayPart)) {
+                return nullptr;
+            }
+            const std::string indexPart = trimCopy(expression.substr(lb + 1, expression.size() - lb - 2));
+            auto arrayExpr              = ExpressionParser(arrayPart).parse();
+            auto indexExpr              = ExpressionParser(indexPart).parse();
+            if (!arrayExpr || !indexExpr) {
+                return nullptr;
+            }
+            return std::make_unique<SubscriptExpression>(std::move(arrayExpr), std::move(indexExpr));
         }
 
         std::unique_ptr<Expression> parseUnary() const

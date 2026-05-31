@@ -22,7 +22,7 @@ inline const IROperand& operandAt(const IRInstruction& instruction, const size_t
 
 inline bool isRegister(const IROperand& operand)
 {
-    return operand.type == OpType::REG && !operand.value.empty();
+    return operand.isAnyReg() && !operand.name.empty();
 }
 
 inline IRCategory categoryOf(const IRType type)
@@ -34,6 +34,7 @@ inline IRCategory categoryOf(const IRType type)
     case IRType::STORE:
     case IRType::LEA:
     case IRType::SEXT:
+    case IRType::CONVERT:
     case IRType::SETCC:
         return IRCategory::Data;
 
@@ -42,6 +43,9 @@ inline IRCategory categoryOf(const IRType type)
     case IRType::MUL:
     case IRType::DIV:
     case IRType::MOD:
+    case IRType::SMUL:
+    case IRType::SDIV:
+    case IRType::SMOD:
     case IRType::NEG:
         return IRCategory::Arithmetic;
 
@@ -167,7 +171,8 @@ inline bool producesValue(const IRType type)
 
 inline bool isSimpleValueProducer(const IRType type)
 {
-    return type == IRType::ASSIGN || type == IRType::LOAD || type == IRType::LOAD_CONST || type == IRType::SEXT || type == IRType::LEA;
+    return type == IRType::ASSIGN || type == IRType::LOAD || type == IRType::LOAD_CONST || type == IRType::SEXT || type == IRType::LEA ||
+           type == IRType::CONVERT;
 }
 
 inline bool isPureExpression(const IRType type)
@@ -188,6 +193,9 @@ inline bool isBinaryExpression(const IRType type)
     case IRType::MUL:
     case IRType::DIV:
     case IRType::MOD:
+    case IRType::SMUL:
+    case IRType::SDIV:
+    case IRType::SMOD:
     case IRType::AND:
     case IRType::OR:
     case IRType::XOR:

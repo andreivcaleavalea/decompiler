@@ -12,15 +12,15 @@ static void collectVariables(Graph& cfg, std::set<std::string>& variables)
         for (auto& instruction : block.instructions) {
             if (IRProperties::isPhi(instruction)) {
                 if (IRProperties::hasOperandAt(instruction, 0) && IRProperties::isRegister(instruction.operands[0]) &&
-                    instruction.operands[0].kind == OperandKind::RawRegister) {
-                    variables.insert(ssaBaseName(instruction.operands[0].value));
+                    instruction.operands[0].tag == OperandTag::Register) {
+                    variables.insert(ssaBaseName(instruction.operands[0].name));
                 }
                 continue;
             }
 
             for (auto& operand : instruction.operands) {
-                if (IRProperties::isRegister(operand) && operand.kind == OperandKind::RawRegister) {
-                    variables.insert(ssaBaseName(operand.value));
+                if (IRProperties::isRegister(operand) && operand.tag == OperandTag::Register) {
+                    variables.insert(ssaBaseName(operand.name));
                 }
             }
         }
@@ -39,6 +39,14 @@ static std::string currentVersion(std::string variable, std::unordered_map<std::
 static std::string versionForUse(std::string variable, std::unordered_map<std::string, std::vector<size_t>>& versionStack)
 {
     return currentVersion(ssaBaseName(variable), versionStack);
+}
+
+static void renameHeapDerefRegister(std::string& reg, std::unordered_map<std::string, std::vector<size_t>>& versionStack)
+{
+    if (reg.empty() || versionStack.find(ssaBaseName(reg)) == versionStack.end()) {
+        return;
+    }
+    reg = versionForUse(reg, versionStack);
 }
 
 static std::string createNewVersion(
@@ -72,14 +80,14 @@ static void updatePhiInputsInSuccessors(Graph& cfg, size_t blockId, std::unorder
                 break;
             }
 
-            std::string variable            = ssaBaseName(instruction.operands[0].value);
-            std::vector<std::string> inputs = splitPhiInputs(instruction.operands[1].value);
+            std::string variable            = ssaBaseName(instruction.operands[0].name);
+            std::vector<std::string> inputs = splitPhiInputs(instruction.operands[1].name);
             if (inputs.size() < cfg.blocks[successorId].predecessors.size()) {
                 inputs.resize(cfg.blocks[successorId].predecessors.size(), ssaVersionName(variable, 0));
             }
 
-            inputs[predecessorIndex]      = currentVersion(variable, versionStack);
-            instruction.operands[1].value = joinPhiInputs(inputs);
+            inputs[predecessorIndex]     = currentVersion(variable, versionStack);
+            instruction.operands[1].name = joinPhiInputs(inputs);
         }
     }
 }
@@ -96,10 +104,10 @@ static void renameBlock(
 
     for (auto& instruction : block.instructions) {
         if (IRProperties::isPhi(instruction)) {
-            if (IRProperties::isRegister(instruction.operands[0]) && instruction.operands[0].kind == OperandKind::RawRegister) {
-                std::string variable          = ssaBaseName(instruction.operands[0].value);
-                instruction.operands[0].value = createNewVersion(variable, versionCounters, versionStack);
-                instruction.operands[0].kind  = OperandKind::SsaTemp;
+            if (IRProperties::isRegister(instruction.operands[0]) && instruction.operands[0].tag == OperandTag::Register) {
+                std::string variable         = ssaBaseName(instruction.operands[0].name);
+                instruction.operands[0].name = createNewVersion(variable, versionCounters, versionStack);
+                instruction.operands[0].tag  = OperandTag::SsaTemp;
                 definitionsInThisBlock.push_back(variable);
             }
             continue;
@@ -108,17 +116,33 @@ static void renameBlock(
         bool createsValue = IRProperties::createsNewValue(instruction);
         for (size_t operandIndex = 0; operandIndex < instruction.operands.size(); ++operandIndex) {
             auto& operand = instruction.operands[operandIndex];
-            if (IRProperties::usesOperandAt(instruction, operandIndex) && IRProperties::isRegister(operand) && operand.kind == OperandKind::RawRegister) {
-                operand.value = versionForUse(operand.value, versionStack);
-                operand.kind  = OperandKind::SsaTemp;
+            if (IRProperties::usesOperandAt(instruction, operandIndex) && IRProperties::isRegister(operand) && operand.tag == OperandTag::Register) {
+                operand.name = versionForUse(operand.name, versionStack);
+                operand.tag  = OperandTag::SsaTemp;
+            }
+            if (operand.tag == OperandTag::StackVar && !operand.arrayIndex.empty() && !std::isdigit(static_cast<unsigned char>(operand.arrayIndex[0]))) {
+                operand.arrayIndex = versionForUse(operand.arrayIndex, versionStack);
+            }
+            if (operand.tag == OperandTag::HeapDeref) {
+                renameHeapDerefRegister(operand.heapDeref.base, versionStack);
+                renameHeapDerefRegister(operand.heapDeref.index, versionStack);
             }
         }
 
-        if (createsValue && IRProperties::isRegister(instruction.operands[0]) && instruction.operands[0].kind == OperandKind::RawRegister) {
-            std::string variable          = ssaBaseName(instruction.operands[0].value);
-            instruction.operands[0].value = createNewVersion(variable, versionCounters, versionStack);
-            instruction.operands[0].kind  = OperandKind::SsaTemp;
+        if (createsValue && IRProperties::isRegister(instruction.operands[0]) && instruction.operands[0].tag == OperandTag::Register) {
+            std::string variable         = ssaBaseName(instruction.operands[0].name);
+            instruction.operands[0].name = createNewVersion(variable, versionCounters, versionStack);
+            instruction.operands[0].tag  = OperandTag::SsaTemp;
             definitionsInThisBlock.push_back(variable);
+        }
+
+        if (IRProperties::isCall(instruction.type)) {
+            for (const std::string returnReg : { "rax", "xmm0" }) {
+                if (versionStack.find(returnReg) != versionStack.end()) {
+                    createNewVersion(returnReg, versionCounters, versionStack);
+                    definitionsInThisBlock.push_back(returnReg);
+                }
+            }
         }
     }
 

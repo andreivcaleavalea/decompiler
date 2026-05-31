@@ -165,7 +165,7 @@ void restructureForLoops(std::vector<std::unique_ptr<ASTNode>>& nodes)
             --i;
         }
 
-        auto forNode = std::make_unique<ForNode>();
+        auto forNode  = std::make_unique<ForNode>();
         forNode->init = std::move(initializer.statement);
         forNode->body = std::move(whileNode->body);
         stripTrailingContinues(forNode->body);

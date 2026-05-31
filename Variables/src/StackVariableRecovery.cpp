@@ -1,110 +1,97 @@
 #include "StackVariableRecovery.h"
 
-#include <cctype>
-#include <string>
+#include "WindowsX64.h"
 
 namespace Decompiler
 {
 namespace
 {
-    std::string canonicalBase(const std::string& raw)
+    std::string accessSizeSuffix(const uint32_t sizeBytes)
     {
-        std::string value     = raw;
-        const auto underscore = value.find('_');
-        if (underscore != std::string::npos) {
-            value = value.substr(0, underscore);
+        switch (sizeBytes) {
+        case 1:
+            return "_byte";
+        case 2:
+            return "_word";
+        case 4:
+            return "_dword";
+        case 8:
+            return "_qword";
+        default:
+            return {};
         }
-        for (char& ch : value) {
-            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-        }
-        return value;
-    }
-
-    bool isStackPointerBase(const std::string& base)
-    {
-        return base == "rsp" || base == "esp" || base == "sp";
-    }
-
-    bool isFramePointerBase(const std::string& base)
-    {
-        return base == "rbp" || base == "ebp" || base == "bp";
-    }
-
-    std::string makeLocalName(const long long positiveOffset)
-    {
-        return "var_" + std::to_string(positiveOffset);
-    }
-
-    std::string makeArgumentName(const long long positiveOffset, const StackFrameLayout layout)
-    {
-        if (layout == StackFrameLayout::Win64HomeSlots) {
-            if (const auto homeSlotIndex = argumentIndexForWin64HomeSlot(positiveOffset); homeSlotIndex.has_value()) {
-                return "arg_" + std::to_string(*homeSlotIndex);
-            }
-        }
-        return "arg_" + std::to_string(positiveOffset);
-    }
-
-    std::string stackVariableName(const std::string& base, const long long displacement, const StackFrameLayout layout)
-    {
-        if (isFramePointerBase(base)) {
-            if (displacement <= 0) {
-                return makeLocalName(-displacement);
-            }
-            return makeArgumentName(displacement, layout);
-        }
-        if (isStackPointerBase(base)) {
-            if (displacement < 0) {
-                return {};
-            }
-            return makeLocalName(displacement);
-        }
-        return {};
     }
 
     bool isStackSlotOperand(const IROperand& operand)
     {
-        if (operand.type != OpType::MEM || !operand.memory.has_value()) {
+        if (!operand.isHeapDeref()) {
             return false;
         }
-        const auto& memory = *operand.memory;
+        const auto& memory = operand.heapDeref;
         if (memory.absolute.has_value()) {
-            return false;
-        }
-        if (!memory.index.empty()) {
             return false;
         }
         if (memory.base.empty()) {
             return false;
         }
-        return true;
+        const std::string base = normalizedRegisterBase(memory.base);
+        return base == "rbp" || base == "rsp";
     }
 
-    void convertOperand(IROperand& operand, const StackFrameLayout layout)
+    void convertOperand(IROperand& operand, const StackFrame& stackFrame)
     {
         if (!isStackSlotOperand(operand)) {
             return;
         }
 
-        const std::string base = canonicalBase(operand.memory->base);
-        const std::string name = stackVariableName(base, operand.memory->displacement, layout);
-        if (name.empty()) {
+        const auto& memory        = operand.heapDeref;
+        const StackRegion* region = stackFrame.findRegion(memory.displacement, memory.sizeBytes);
+        if (region == nullptr || region->name.empty()) {
             return;
         }
 
-        operand.type  = OpType::REG;
-        operand.value = name;
-        operand.memory.reset();
-        operand.kind = OperandKind::StackVar;
+        const int64_t displacement = memory.displacement;
+        std::string indexName      = memory.index;
+        int32_t indexScale         = memory.scale;
+
+        std::string name = region->name;
+        if (region->kind == StackRegionKind::Union) {
+            const std::string suffix = accessSizeSuffix(memory.sizeBytes);
+            if (!suffix.empty()) {
+                name += suffix;
+            }
+        }
+
+        operand.tag         = OperandTag::StackVar;
+        operand.name        = std::move(name);
+        operand.stackOffset = region->offset;
+        operand.sizeBytes   = memory.sizeBytes != 0 ? memory.sizeBytes : region->elementSize;
+        operand.heapDeref   = {};
+
+        if (region->kind == StackRegionKind::Array && !indexName.empty()) {
+            operand.arrayIndex      = std::move(indexName);
+            operand.arrayIndexScale = indexScale;
+        } else if (region->kind == StackRegionKind::Array) {
+            const int64_t k         = (displacement - region->offset) / static_cast<int64_t>(region->elementSize);
+            operand.arrayIndex      = std::to_string(k);
+            operand.arrayIndexScale = static_cast<int32_t>(region->elementSize);
+        } else {
+            operand.arrayIndex.clear();
+            operand.arrayIndexScale = 1;
+        }
     }
 } // namespace
 
-void recoverStackVariables(Graph& cfg, const StackFrameLayout layout)
+void recoverStackVariables(Graph& cfg, const StackFrame& stackFrame)
 {
     for (auto& block : cfg.blocks) {
         for (auto& instruction : block.instructions) {
+            if (instruction.address != 0 && stackFrame.initStoreAddrs.count(instruction.address) > 0) {
+                instruction.type = IRType::NOP;
+                continue;
+            }
             for (auto& operand : instruction.operands) {
-                convertOperand(operand, layout);
+                convertOperand(operand, stackFrame);
             }
         }
     }

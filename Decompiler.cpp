@@ -1,9 +1,10 @@
 #include "Decompiler.h"
 
+#include <cstdlib>
+#include <fstream>
 #include <sstream>
 #include <vector>
 
-#include "Debug.h"
 #include "Functions.h"
 #include "IR.h"
 #include "Optimizations.h"
@@ -14,19 +15,20 @@
 
 namespace Decompiler
 {
+
 std::vector<std::string> Decompile(const std::vector<AssemblyInstruction>& input, const DecompileContext& context)
 {
-    const auto irs = asm_to_ir(input);
+    const auto irs = transformASMToIR(input);
     if (irs.empty()) {
         return { "NO INSTRUCTIONS" };
     }
 
     DecompilerProgram program;
-    program.context   = context;
-    program.functions = findFunctions(irs);
+    program.context    = context;
+    const bool is64Bit = context.subformat != BinarySubformat::PE32;
+    program.functions  = findFunctions(irs, is64Bit);
 
     if (program.functions.empty()) {
-        Debug::dumpArtifacts(input, irs, {}, program.functions);
         return { "NO FUNCTIONS" };
     }
 
@@ -34,15 +36,20 @@ std::vector<std::string> Decompile(const std::vector<AssemblyInstruction>& input
     if (context.format == BinaryFormat::PE) {
         symbols = Symbols::resolveCOFFSymbols(context.sections, context.coffSymbols);
         Symbols::applyFunctionSymbols(program.functions, symbols);
-    }
 
-    Debug::dumpArtifacts(input, irs, symbols, program.functions);
+        resolveThunks(program.functions, symbols.globals);
+    }
 
     const auto functionNames = functionNamesByAddress(program.functions);
     program.globals          = buildGlobalSymbolTable(context, symbols.globals);
 
     for (auto& function : program.functions) {
         buildFunctionIR(function, program, functionNames);
+    }
+
+    const auto userSignatures = buildUserSignatureMap(program.functions);
+    for (auto& function : program.functions) {
+        refineInterProceduralTypes(function, userSignatures);
     }
 
     Optimizations::runAll(program);
@@ -72,6 +79,14 @@ std::string DecompileToString(const std::vector<AssemblyInstruction>& input, con
         output << "\n/* Output truncated: instruction limit reached. */\n";
     }
 
-    return output.str();
+    const std::string text = output.str();
+
+    const char* dumpPath = std::getenv("GVIEW_DECOMPILER_DUMP");
+    std::ofstream dumpFile(dumpPath != nullptr ? dumpPath : "decompiler_output.txt");
+    if (dumpFile.is_open()) {
+        dumpFile << text;
+    }
+
+    return text;
 }
 } // namespace Decompiler

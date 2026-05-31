@@ -165,6 +165,8 @@ std::string unaryPrefixText(const UnaryOp op)
         return "++";
     case UnaryOp::PreDecrement:
         return "--";
+    case UnaryOp::Dereference:
+        return "*";
     case UnaryOp::PostIncrement:
     case UnaryOp::PostDecrement:
         return {};
@@ -184,6 +186,7 @@ std::string unarySuffixText(const UnaryOp op)
     case UnaryOp::LogicalNot:
     case UnaryOp::PreIncrement:
     case UnaryOp::PreDecrement:
+    case UnaryOp::Dereference:
         return {};
     }
     return {};
@@ -246,6 +249,24 @@ bool UnaryExpression::referencesVariable(const std::string& variable) const
     return operand && operand->referencesVariable(variable);
 }
 
+std::string CastExpression::render() const
+{
+    if (!operand) {
+        return {};
+    }
+    return "(" + type + ")" + parenthesizeIfNeeded(*operand);
+}
+
+std::unique_ptr<Expression> CastExpression::clone() const
+{
+    return std::make_unique<CastExpression>(type, cloneExpression(operand.get()));
+}
+
+bool CastExpression::referencesVariable(const std::string& variable) const
+{
+    return operand && operand->referencesVariable(variable);
+}
+
 std::string CallExpression::render() const
 {
     std::string result = callee + "(";
@@ -273,7 +294,27 @@ std::unique_ptr<Expression> CallExpression::clone() const
 
 bool CallExpression::referencesVariable(const std::string& variable) const
 {
-    return std::any_of(arguments.begin(), arguments.end(), [&](const auto& argument) { return argument && argument->referencesVariable(variable); });
+    for (const auto& argument : arguments) {
+        if (argument && argument->referencesVariable(variable)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string SubscriptExpression::render() const
+{
+    return (array ? array->render() : std::string{}) + "[" + (index ? index->render() : std::string{}) + "]";
+}
+
+std::unique_ptr<Expression> SubscriptExpression::clone() const
+{
+    return std::make_unique<SubscriptExpression>(cloneExpression(array.get()), cloneExpression(index.get()));
+}
+
+bool SubscriptExpression::referencesVariable(const std::string& variable) const
+{
+    return (array && array->referencesVariable(variable)) || (index && index->referencesVariable(variable));
 }
 
 std::unique_ptr<Expression> cloneExpression(const Expression* expression)

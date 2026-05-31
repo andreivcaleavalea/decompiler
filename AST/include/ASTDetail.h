@@ -6,20 +6,20 @@
 #include <string_view>
 #include <vector>
 
-#include "IRTypes.h"
+#include "IRInstruction.h"
+#include "IRProperties.h"
 
 namespace Decompiler::ASTDetail
 {
 std::string trimCopy(const std::string& value);
 bool parseSignedInteger(const std::string& raw, long long& out);
-std::string operandForDisplay(const IROperand& operand, StackFrameLayout layout = StackFrameLayout::Generic);
-std::string normalizeOperandForDisplay(const std::string& operand, StackFrameLayout layout = StackFrameLayout::Generic);
 std::string normalizeImmediateForDisplay(const std::string& operand);
 std::string invertComparisonOperator(const std::string& op);
 bool startsWithAny(const std::string& value, std::initializer_list<std::string_view> prefixes);
 bool isTemporaryName(const std::string& value);
-std::string normalizedValueForDisplay(const std::string& operand, StackFrameLayout layout = StackFrameLayout::Generic);
-std::string substituteTempFromDefinitions(
-      const std::vector<IRInstruction>& instrs, size_t cmpIndex, const std::string& operand, StackFrameLayout layout = StackFrameLayout::Generic);
+std::string substituteTempFromDefinitions(const std::vector<IRInstruction>& instrs, size_t cmpIndex, const std::string& operand);
+std::string renderArrayAccess(const std::vector<IRInstruction>& instrs, size_t cmpIndex, const std::string& addressReg);
+std::string convertCastType(const IROperand& dest);
 std::string invertConditionExpr(const std::string& expr);
+std::string stripReturnType(const std::string& demangledName);
 } // namespace Decompiler::ASTDetail

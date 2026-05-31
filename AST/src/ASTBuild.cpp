@@ -7,23 +7,27 @@
 
 #include "ASTDetail.h"
 #include "ControlGraphFlow.h"
+#include "WindowsX64.h"
 
 namespace Decompiler
 {
 namespace
 {
-    std::string conditionOperandText(
-          const std::vector<IRInstruction>& instrs, const size_t beforeIndex, const IROperand& operand, const StackFrameLayout layout)
+    std::string conditionOperandText(const std::vector<IRInstruction>& instrs, const size_t beforeIndex, const IROperand& operand)
     {
-        if (operand.type == OpType::MEM && operand.memory.has_value()) {
-            return ASTDetail::normalizeOperandForDisplay(operand.value, layout);
+        if (operand.isHeapDeref()) {
+            return operand.name;
         }
-
-        const std::string value = ASTDetail::normalizeOperandForDisplay(operand.value, layout);
-        if (ASTDetail::isTemporaryName(value)) {
-            return ASTDetail::substituteTempFromDefinitions(instrs, beforeIndex, operand.value, layout);
+        if (operand.tag == OperandTag::StackVar && !operand.arrayIndex.empty()) {
+            const std::string indexText = ASTDetail::isTemporaryName(operand.arrayIndex)
+                                                ? ASTDetail::substituteTempFromDefinitions(instrs, beforeIndex, operand.arrayIndex)
+                                                : operand.arrayIndex;
+            return operand.name + "[" + indexText + "]";
         }
-        return ASTDetail::operandForDisplay(operand, layout);
+        if (ASTDetail::isTemporaryName(operand.name)) {
+            return ASTDetail::substituteTempFromDefinitions(instrs, beforeIndex, operand.name);
+        }
+        return operand.name;
     }
 
     bool isSyntheticSsaCopy(const IRInstruction& instruction)
@@ -65,7 +69,7 @@ namespace
         bool invert_condition = false;
     };
 
-    ComparisonOp comparisonOpFromCondition(const ConditionCode condition)
+    ComparisonOp comparisonOpFromCondition(const ConditionCode condition, const bool isFloat)
     {
         switch (condition) {
         case ConditionCode::E:
@@ -81,20 +85,20 @@ namespace
         case ConditionCode::GE:
             return ComparisonOp::GreaterEqual;
         case ConditionCode::B:
-            return ComparisonOp::UnsignedLess;
+            return isFloat ? ComparisonOp::Less : ComparisonOp::UnsignedLess;
         case ConditionCode::BE:
-            return ComparisonOp::UnsignedLessEqual;
+            return isFloat ? ComparisonOp::LessEqual : ComparisonOp::UnsignedLessEqual;
         case ConditionCode::A:
-            return ComparisonOp::UnsignedGreater;
+            return isFloat ? ComparisonOp::Greater : ComparisonOp::UnsignedGreater;
         case ConditionCode::AE:
-            return ComparisonOp::UnsignedGreaterEqual;
+            return isFloat ? ComparisonOp::GreaterEqual : ComparisonOp::UnsignedGreaterEqual;
         case ConditionCode::None:
             return ComparisonOp::Equal;
         }
         return ComparisonOp::Equal;
     }
 
-    std::unique_ptr<Expression> makeExtractedCondition(std::string lhs, const ConditionCode condition, std::string rhs)
+    std::unique_ptr<Expression> makeExtractedCondition(std::string lhs, const ConditionCode condition, std::string rhs, const bool isFloat = false)
     {
         lhs = simplifyArithmeticText(std::move(lhs));
         rhs = simplifyArithmeticText(std::move(rhs));
@@ -105,7 +109,7 @@ namespace
             return nullptr;
         }
 
-        return std::make_unique<ComparisonExpression>(comparisonOpFromCondition(condition), std::move(lhsExpression), std::move(rhsExpression));
+        return std::make_unique<ComparisonExpression>(comparisonOpFromCondition(condition, isFloat), std::move(lhsExpression), std::move(rhsExpression));
     }
 
     void assignCondition(IfNode& node, const Expression& condition)
@@ -181,6 +185,8 @@ namespace
         case IRType::SAR:
         case IRType::MUL:
         case IRType::DIV:
+        case IRType::SMUL:
+        case IRType::SDIV:
         case IRType::NEG:
         case IRType::NOT:
             return true;
@@ -190,23 +196,54 @@ namespace
     }
 
     void collectConditionTempDefinition(
-          const std::vector<IRInstruction>& instrs,
-          const size_t beforeIndex,
-          const IROperand& operand,
-          const StackFrameLayout layout,
-          std::vector<size_t>& eraseIndices)
+          const std::vector<IRInstruction>& instrs, const size_t beforeIndex, const IROperand& operand, std::vector<size_t>& eraseIndices)
     {
-        const std::string value = ASTDetail::normalizeOperandForDisplay(operand.value, layout);
-        if (!ASTDetail::isTemporaryName(value)) {
+        if (!ASTDetail::isTemporaryName(operand.name)) {
             return;
         }
 
         for (size_t i = beforeIndex; i-- > 0;) {
-            if (IRProperties::operandAt(instrs[i], 0).value != operand.value) {
+            if (IRProperties::operandAt(instrs[i], 0).name != operand.name) {
                 continue;
             }
-            if (isPureConditionExpressionDef(instrs[i])) {
-                eraseIndices.push_back(i);
+            if (!isPureConditionExpressionDef(instrs[i])) {
+                return;
+            }
+            eraseIndices.push_back(i);
+
+            collectConditionTempDefinition(instrs, i, IRProperties::operandAt(instrs[i], 1), eraseIndices);
+            collectConditionTempDefinition(instrs, i, IRProperties::operandAt(instrs[i], 2), eraseIndices);
+
+            const auto& src = IRProperties::operandAt(instrs[i], 1);
+            if (ASTDetail::isTemporaryName(src.name) && ASTDetail::startsWithAny(src.name, { "rax_", "eax_", "xmm0_" })) {
+                for (size_t k = i; k-- > 0;) {
+                    if (IRProperties::isNop(instrs[k])) {
+                        continue;
+                    }
+                    if (instrs[k].type == IRType::CALL) {
+                        eraseIndices.push_back(k);
+                        for (size_t m = k; m-- > 0;) {
+                            if (IRProperties::isNop(instrs[m])) {
+                                continue;
+                            }
+                            if (IRProperties::isControlFlow(instrs[m].type)) {
+                                break;
+                            }
+                            if (!IRProperties::isSimpleValueProducer(instrs[m].type)) {
+                                break;
+                            }
+                            if (!IRProperties::hasOperandAt(instrs[m], 0) || !instrs[m].operands[0].isAnyReg()) {
+                                break;
+                            }
+                            if (argumentIndexForRegisterName(instrs[m].operands[0].name).has_value()) {
+                                eraseIndices.push_back(m);
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    break;
+                }
             }
             return;
         }
@@ -215,7 +252,7 @@ namespace
     void eraseConditionInstructions(std::vector<IRInstruction>& instrs, std::vector<size_t> eraseIndices)
     {
         eraseIndices.push_back(instrs.size() - 1);
-        std::ranges::sort(eraseIndices);
+        std::sort(eraseIndices.begin(), eraseIndices.end());
         eraseIndices.erase(std::unique(eraseIndices.begin(), eraseIndices.end()), eraseIndices.end());
         for (auto it = eraseIndices.rbegin(); it != eraseIndices.rend(); ++it) {
             if (*it < instrs.size()) {
@@ -224,7 +261,62 @@ namespace
         }
     }
 
-    std::unique_ptr<Expression> try_extract_condition_and_trim(std::vector<IRInstruction>& instrs, const bool invertOperator, const StackFrameLayout layout)
+    void eraseOrphanedConditionCalls(std::vector<IRInstruction>& instrs)
+    {
+        size_t i = 0;
+        while (i < instrs.size()) {
+            if (instrs[i].type != IRType::CALL) {
+                ++i;
+                continue;
+            }
+
+            size_t start = i;
+            while (start > 0) {
+                const auto& prev = instrs[start - 1];
+                if (IRProperties::isNop(prev)) {
+                    --start;
+                    continue;
+                }
+                if (!IRProperties::isSimpleValueProducer(prev.type)) {
+                    break;
+                }
+                if (prev.operands.empty() || !prev.operands[0].isAnyReg()) {
+                    break;
+                }
+                if (argumentIndexForRegisterName(prev.operands[0].name).has_value()) {
+                    --start;
+                } else {
+                    break;
+                }
+            }
+
+            size_t end = i + 1;
+            while (end < instrs.size()) {
+                const auto& next = instrs[end];
+                if (IRProperties::isNop(next)) {
+                    ++end;
+                    continue;
+                }
+                if (!IRProperties::isSimpleValueProducer(next.type)) {
+                    break;
+                }
+                if (next.operands.empty() || !next.operands[0].isAnyReg()) {
+                    break;
+                }
+                const std::string base = normalizedRegisterBase(next.operands[0].name);
+                if (base == "rax" || base == "eax" || base == "xmm0") {
+                    ++end;
+                } else {
+                    break;
+                }
+            }
+
+            instrs.erase(instrs.begin() + start, instrs.begin() + end);
+            i = start;
+        }
+    }
+
+    std::unique_ptr<Expression> try_extract_condition_and_trim(std::vector<IRInstruction>& instrs, const bool invertOperator)
     {
         if (instrs.empty()) {
             return nullptr;
@@ -253,36 +345,40 @@ namespace
             }
 
             if (candidate.type == IRType::CMP) {
-                const std::string lhs            = conditionOperandText(instrs, condIndex, IRProperties::operandAt(candidate, 1), layout);
-                const std::string rhs            = conditionOperandText(instrs, condIndex, IRProperties::operandAt(candidate, 2), layout);
+                const std::string lhs = conditionOperandText(instrs, condIndex, IRProperties::operandAt(candidate, 1));
+                const std::string rhs = conditionOperandText(instrs, condIndex, IRProperties::operandAt(candidate, 2));
+                const bool isFloat    = ASTDetail::startsWithAny(IRProperties::operandAt(candidate, 1).name, { "xmm" }) ||
+                                     ASTDetail::startsWithAny(IRProperties::operandAt(candidate, 2).name, { "xmm" });
                 std::vector<size_t> eraseIndices = { condIndex };
-                collectConditionTempDefinition(instrs, condIndex, IRProperties::operandAt(candidate, 1), layout, eraseIndices);
-                collectConditionTempDefinition(instrs, condIndex, IRProperties::operandAt(candidate, 2), layout, eraseIndices);
+                collectConditionTempDefinition(instrs, condIndex, IRProperties::operandAt(candidate, 1), eraseIndices);
+                collectConditionTempDefinition(instrs, condIndex, IRProperties::operandAt(candidate, 2), eraseIndices);
                 eraseConditionInstructions(instrs, std::move(eraseIndices));
-                return makeExtractedCondition(lhs, condition, rhs);
+                eraseOrphanedConditionCalls(instrs);
+                return makeExtractedCondition(lhs, condition, rhs, isFloat);
             }
 
             if (candidate.type == IRType::TEST && (op_str == "==" || op_str == "!=")) {
-                const std::string lhs            = conditionOperandText(instrs, condIndex, IRProperties::operandAt(candidate, 1), layout);
-                const std::string rhs            = conditionOperandText(instrs, condIndex, IRProperties::operandAt(candidate, 2), layout);
+                const std::string lhs            = conditionOperandText(instrs, condIndex, IRProperties::operandAt(candidate, 1));
+                const std::string rhs            = conditionOperandText(instrs, condIndex, IRProperties::operandAt(candidate, 2));
                 std::vector<size_t> eraseIndices = { condIndex };
-                collectConditionTempDefinition(instrs, condIndex, IRProperties::operandAt(candidate, 1), layout, eraseIndices);
-                collectConditionTempDefinition(instrs, condIndex, IRProperties::operandAt(candidate, 2), layout, eraseIndices);
+                collectConditionTempDefinition(instrs, condIndex, IRProperties::operandAt(candidate, 1), eraseIndices);
+                collectConditionTempDefinition(instrs, condIndex, IRProperties::operandAt(candidate, 2), eraseIndices);
                 eraseConditionInstructions(instrs, std::move(eraseIndices));
+                eraseOrphanedConditionCalls(instrs);
                 if (lhs == rhs) {
                     return makeExtractedCondition(lhs, condition, "0");
                 }
                 return makeExtractedCondition("(" + lhs + " & " + rhs + ")", condition, "0");
             }
 
-            if ((candidate.type == IRType::SUB || candidate.type == IRType::ADD) &&
-                ASTDetail::isTemporaryName(ASTDetail::normalizeOperandForDisplay(IRProperties::operandAt(candidate, 0).value, layout))) {
-                const std::string lhs            = conditionOperandText(instrs, condIndex, IRProperties::operandAt(candidate, 1), layout);
-                const std::string rhs            = conditionOperandText(instrs, condIndex, IRProperties::operandAt(candidate, 2), layout);
+            if ((candidate.type == IRType::SUB || candidate.type == IRType::ADD) && ASTDetail::isTemporaryName(IRProperties::operandAt(candidate, 0).name)) {
+                const std::string lhs            = conditionOperandText(instrs, condIndex, IRProperties::operandAt(candidate, 1));
+                const std::string rhs            = conditionOperandText(instrs, condIndex, IRProperties::operandAt(candidate, 2));
                 std::vector<size_t> eraseIndices = { condIndex };
-                collectConditionTempDefinition(instrs, condIndex, IRProperties::operandAt(candidate, 1), layout, eraseIndices);
-                collectConditionTempDefinition(instrs, condIndex, IRProperties::operandAt(candidate, 2), layout, eraseIndices);
+                collectConditionTempDefinition(instrs, condIndex, IRProperties::operandAt(candidate, 1), eraseIndices);
+                collectConditionTempDefinition(instrs, condIndex, IRProperties::operandAt(candidate, 2), eraseIndices);
                 eraseConditionInstructions(instrs, std::move(eraseIndices));
+                eraseOrphanedConditionCalls(instrs);
 
                 if (candidate.type == IRType::SUB) {
                     return makeExtractedCondition(lhs, condition, rhs);
@@ -310,12 +406,6 @@ class LoopNodeBuilder
     {
     }
 
-    void set_calling_convention(const CallingConvention callingConvention)
-    {
-        calling_convention_ = callingConvention;
-        stack_frame_layout_ = stackFrameLayoutForCallingConvention(callingConvention);
-    }
-
     bool try_create_while(size_t& curr, const bool is_loop_header, std::vector<IRInstruction> instrs)
     {
         const auto& block = cfg_.blocks[curr];
@@ -338,7 +428,7 @@ class LoopNodeBuilder
         const bool has_self_loop = (body_start == curr);
         const bool invert_cond   = (body_start != s0);
 
-        auto condition = try_extract_condition_and_trim(instrs, invert_cond, stack_frame_layout_);
+        auto condition = try_extract_condition_and_trim(instrs, invert_cond);
         if (!condition) {
             return false;
         }
@@ -355,11 +445,11 @@ class LoopNodeBuilder
             return true;
         }
 
-        while_node->body = build_ast(cfg_, doms_, postdoms_, body_start, curr, curr, loop_exit, calling_convention_);
+        while_node->body = build_ast(cfg_, doms_, postdoms_, body_start, curr, curr, loop_exit);
         if (!instrs.empty()) {
             auto seq         = std::make_unique<SimpleBlockNode>();
             seq->block_index = curr;
-            seq->statements  = lowerBlockToStatements(instrs, calling_convention_);
+            seq->statements  = lowerBlockToStatements(instrs);
             while_node->body.insert(while_node->body.begin(), std::move(seq));
         }
 
@@ -388,7 +478,7 @@ class LoopNodeBuilder
 
             const size_t loop_exit     = (s0 == curr) ? s1 : s0;
             const bool invertCondition = (s1 == curr);
-            auto condition             = try_extract_condition_and_trim(instrs, invertCondition, stack_frame_layout_);
+            auto condition             = try_extract_condition_and_trim(instrs, invertCondition);
             if (!condition) {
                 return false;
             }
@@ -402,7 +492,7 @@ class LoopNodeBuilder
 
             auto seq         = std::make_unique<SimpleBlockNode>();
             seq->block_index = curr;
-            seq->statements  = lowerBlockToStatements(instrs, calling_convention_);
+            seq->statements  = lowerBlockToStatements(instrs);
             do_while_node->body.push_back(std::move(seq));
 
             ast_.push_back(std::move(do_while_node));
@@ -419,18 +509,18 @@ class LoopNodeBuilder
         const size_t loop_header   = s0_is_back_target ? s0 : s1;
         const size_t loop_exit     = (loop_header == s0) ? s1 : s0;
         const bool invertCondition = !s0_is_back_target;
-        auto condition             = try_extract_condition_and_trim(instrs, invertCondition, stack_frame_layout_);
+        auto condition             = try_extract_condition_and_trim(instrs, invertCondition);
         if (!condition) {
             return false;
         }
         auto do_while_node = std::make_unique<DoWhileNode>();
         assignCondition(*do_while_node, std::move(condition));
-        do_while_node->body = build_ast(cfg_, doms_, postdoms_, loop_header, curr, loop_header, loop_exit, calling_convention_);
+        do_while_node->body = build_ast(cfg_, doms_, postdoms_, loop_header, curr, loop_header, loop_exit);
 
         if (!instrs.empty()) {
             auto seq         = std::make_unique<SimpleBlockNode>();
             seq->block_index = curr;
-            seq->statements  = lowerBlockToStatements(instrs, calling_convention_);
+            seq->statements  = lowerBlockToStatements(instrs);
             do_while_node->body.push_back(std::move(seq));
         }
 
@@ -478,8 +568,6 @@ class LoopNodeBuilder
     const std::vector<size_t>& postdoms_;
     size_t stop_block_;
     std::vector<std::unique_ptr<ASTNode>>& ast_;
-    CallingConvention calling_convention_ = CallingConvention::Unknown;
-    StackFrameLayout stack_frame_layout_  = StackFrameLayout::Generic;
 };
 
 std::vector<std::unique_ptr<ASTNode>> build_ast(
@@ -489,8 +577,7 @@ std::vector<std::unique_ptr<ASTNode>> build_ast(
       size_t current_block,
       size_t stop_block,
       size_t continue_target,
-      size_t break_target,
-      CallingConvention calling_convention)
+      size_t break_target)
 {
     std::vector<std::unique_ptr<ASTNode>> ast;
     if (current_block == continue_target && isValidBlockId(cfg, continue_target)) {
@@ -505,8 +592,6 @@ std::vector<std::unique_ptr<ASTNode>> build_ast(
     size_t curr = current_block;
     std::set<size_t> visited;
     LoopNodeBuilder loopNodeBuilder(cfg, doms, postdoms, stop_block, ast);
-    loopNodeBuilder.set_calling_convention(calling_convention);
-    const StackFrameLayout stackFrameLayout = stackFrameLayoutForCallingConvention(calling_convention);
 
     while (curr != stop_block && curr != static_cast<size_t>(-1) && curr < cfg.blocks.size() && !visited.contains(curr)) {
         if (curr == continue_target && isValidBlockId(cfg, continue_target)) {
@@ -546,11 +631,11 @@ std::vector<std::unique_ptr<ASTNode>> build_ast(
                 break;
             }
 
-            auto condition = try_extract_condition_and_trim(instrs, false, stackFrameLayout);
+            auto condition = try_extract_condition_and_trim(instrs, false);
             if (!condition) {
                 auto seq         = std::make_unique<SimpleBlockNode>();
                 seq->block_index = curr;
-                seq->statements  = lowerBlockToStatements(instrs, calling_convention);
+                seq->statements  = lowerBlockToStatements(instrs);
                 ast.push_back(std::move(seq));
                 break;
             }
@@ -573,7 +658,7 @@ std::vector<std::unique_ptr<ASTNode>> build_ast(
                 if (!instrs.empty()) {
                     auto seq         = std::make_unique<SimpleBlockNode>();
                     seq->block_index = curr;
-                    seq->statements  = lowerBlockToStatements(instrs, calling_convention);
+                    seq->statements  = lowerBlockToStatements(instrs);
                     ast.push_back(std::move(seq));
                 }
                 ast.push_back(std::move(if_node));
@@ -620,7 +705,7 @@ std::vector<std::unique_ptr<ASTNode>> build_ast(
             if (!has_loop_context && (true_reenters_header || false_reenters_header)) {
                 auto seq         = std::make_unique<SimpleBlockNode>();
                 seq->block_index = curr;
-                seq->statements  = lowerBlockToStatements(instrs, calling_convention);
+                seq->statements  = lowerBlockToStatements(instrs);
                 ast.push_back(std::move(seq));
                 break;
             }
@@ -628,14 +713,14 @@ std::vector<std::unique_ptr<ASTNode>> build_ast(
             if (!instrs.empty()) {
                 auto seq         = std::make_unique<SimpleBlockNode>();
                 seq->block_index = curr;
-                seq->statements  = lowerBlockToStatements(instrs, calling_convention);
+                seq->statements  = lowerBlockToStatements(instrs);
                 ast.push_back(std::move(seq));
             }
 
-            if_node->true_branch = build_ast(cfg, doms, postdoms, true_block, merge_block, continue_target, break_target, calling_convention);
+            if_node->true_branch = build_ast(cfg, doms, postdoms, true_block, merge_block, continue_target, break_target);
 
             if (!omit_false_branch && false_block != merge_block) {
-                if_node->false_branch = build_ast(cfg, doms, postdoms, false_block, merge_block, continue_target, break_target, calling_convention);
+                if_node->false_branch = build_ast(cfg, doms, postdoms, false_block, merge_block, continue_target, break_target);
             }
 
             ast.push_back(std::move(if_node));
@@ -647,7 +732,7 @@ std::vector<std::unique_ptr<ASTNode>> build_ast(
         } else {
             auto seq         = std::make_unique<SimpleBlockNode>();
             seq->block_index = curr;
-            seq->statements  = lowerBlockToStatements(instrs, calling_convention);
+            seq->statements  = lowerBlockToStatements(instrs);
             ast.push_back(std::move(seq));
 
             if (block.successors.empty())

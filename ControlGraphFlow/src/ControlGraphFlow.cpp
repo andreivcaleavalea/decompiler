@@ -169,7 +169,7 @@ Graph buildCFG(const std::vector<IRInstruction>& instructions)
                 indexes.insert(i + 1);
             }
             if (!IRProperties::isReturn(ins.type)) {
-                if (const auto address = parseJumpAddress(IRProperties::operandAt(ins, 0).value); address.has_value()) {
+                if (const auto address = parseJumpAddress(IRProperties::operandAt(ins, 0).name); address.has_value()) {
                     if (const auto targetIndex = targetIndexForAddress(address_to_index, *address); targetIndex.has_value()) {
                         indexes.insert(*targetIndex);
                     }
@@ -221,7 +221,7 @@ Graph buildCFG(const std::vector<IRInstruction>& instructions)
         auto& last_ins = block.instructions.back();
 
         if (IRProperties::isJump(last_ins.type)) {
-            if (const auto address = parseJumpAddress(IRProperties::operandAt(last_ins, 0).value); address.has_value()) {
+            if (const auto address = parseJumpAddress(IRProperties::operandAt(last_ins, 0).name); address.has_value()) {
                 if (const auto targetBlock = targetIndexForAddress(address_to_block_index, *address); targetBlock.has_value()) {
                     addEdge(cfg, block.index, *targetBlock);
                 }
@@ -246,7 +246,7 @@ void log(const Graph& graph)
         out << "==== Block: " << i << "====" << std::endl;
 
         for (auto ins : graph.blocks[i].instructions) {
-            out << ins.address << " " << ins.op << " " << IRProperties::operandAt(ins, 0).value << " " << IRProperties::operandAt(ins, 1).value << std::endl;
+            out << ins.address << " " << ins.op << " " << IRProperties::operandAt(ins, 0).name << " " << IRProperties::operandAt(ins, 1).name << std::endl;
         }
 
         out << "== PREDECESSORS === " << std::endl;
@@ -293,8 +293,8 @@ void ExportCFGToDotWithInstructions(const std::vector<InsBlock>& all_blocks, con
         out << "-------------------------\\l";
 
         for (const auto& inst : block.instructions) {
-            const std::string first  = IRProperties::operandAt(inst, 0).value;
-            const std::string second = IRProperties::operandAt(inst, 1).value;
+            const std::string first  = IRProperties::operandAt(inst, 0).name;
+            const std::string second = IRProperties::operandAt(inst, 1).name;
             std::string res          = inst.op + " " + first + (second.empty() ? "" : ", " + second);
             std::string escaped_text = EscapeGraphvizString(res);
             out << escaped_text << "\\l";

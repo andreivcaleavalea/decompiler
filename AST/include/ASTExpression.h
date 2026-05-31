@@ -12,7 +12,7 @@ enum class BinaryOp { Add, Sub, Mul, Div, Mod, BitAnd, BitOr, BitXor, Shl, Shr }
 
 enum class ComparisonOp { Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual, UnsignedLess, UnsignedLessEqual, UnsignedGreater, UnsignedGreaterEqual };
 
-enum class UnaryOp { Negate, BitwiseNot, LogicalNot, PostIncrement, PostDecrement, PreIncrement, PreDecrement };
+enum class UnaryOp { Negate, BitwiseNot, LogicalNot, PostIncrement, PostDecrement, PreIncrement, PreDecrement, Dereference };
 
 struct Expression {
     virtual ~Expression()                                              = default;
@@ -110,11 +110,37 @@ struct UnaryExpression : Expression {
     bool referencesVariable(const std::string& variable) const override;
 };
 
+struct CastExpression : Expression {
+    std::string type;
+    std::unique_ptr<Expression> operand;
+
+    CastExpression(std::string castType, std::unique_ptr<Expression> value) : type(std::move(castType)), operand(std::move(value))
+    {
+    }
+
+    std::string render() const override;
+    std::unique_ptr<Expression> clone() const override;
+    bool referencesVariable(const std::string& variable) const override;
+};
+
 struct CallExpression : Expression {
     std::string callee;
     std::vector<std::unique_ptr<Expression>> arguments;
 
     CallExpression(std::string name, std::vector<std::unique_ptr<Expression>> args) : callee(std::move(name)), arguments(std::move(args))
+    {
+    }
+
+    std::string render() const override;
+    std::unique_ptr<Expression> clone() const override;
+    bool referencesVariable(const std::string& variable) const override;
+};
+
+struct SubscriptExpression : Expression {
+    std::unique_ptr<Expression> array;
+    std::unique_ptr<Expression> index;
+
+    SubscriptExpression(std::unique_ptr<Expression> arr, std::unique_ptr<Expression> idx) : array(std::move(arr)), index(std::move(idx))
     {
     }
 

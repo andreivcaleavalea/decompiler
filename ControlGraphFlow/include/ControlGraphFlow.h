@@ -3,7 +3,8 @@
 #include <fstream>
 #include <vector>
 
-#include "IRTypes.h"
+#include "IRInstruction.h"
+#include "IRProperties.h"
 
 namespace Decompiler
 {

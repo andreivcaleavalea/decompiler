@@ -3,7 +3,10 @@
 #include <algorithm>
 #include <charconv>
 #include <cctype>
+#include <cmath>
+#include <cstdio>
 #include <cstdint>
+#include <cstring>
 #include <iterator>
 #include <string>
 #include <optional>
@@ -11,9 +14,11 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <map>
 
 #include "ASTDetail.h"
 #include "GlobalVariableRecovery.h"
+#include "WindowsX64.h"
 #include "Optimizations.h"
 #include "llvm/Demangle/Demangle.h"
 
@@ -44,7 +49,9 @@ namespace
     bool isZeroInitializedRegion(const GlobalMemoryRegion& region)
     {
         std::string name = region.sectionName;
-        std::ranges::transform(name, name.begin(), [](const unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        for (auto& ch : name) {
+            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        }
         return name.find("bss") != std::string::npos || name.find("common") != std::string::npos || name.find("zerofill") != std::string::npos;
     }
 
@@ -93,6 +100,102 @@ namespace
             values.push_back(*value);
         }
         return values;
+    }
+
+    std::optional<std::string> tryReadCString(const DecompileContext& context, const std::vector<GlobalMemoryRegion>& regions, const uint64_t address)
+    {
+        if (!context.rawData) {
+            return std::nullopt;
+        }
+
+        const auto* region = findRegionForAddress(regions, address);
+        if (!region || isZeroInitializedRegion(*region)) {
+            return std::nullopt;
+        }
+
+        const uint64_t offsetInRegion = address - region->start;
+        const uint64_t fileOffset     = region->fileOffset + offsetInRegion;
+        if (fileOffset >= context.rawData->size()) {
+            return std::nullopt;
+        }
+
+        std::string result;
+        constexpr size_t maxLen = 512;
+        const size_t available  = context.rawData->size() - fileOffset;
+
+        for (size_t i = 0; i < std::min(available, maxLen); ++i) {
+            const unsigned char ch = (*context.rawData)[fileOffset + i];
+            if (ch == '\0') {
+                return result.empty() ? std::nullopt : std::optional<std::string>(result);
+            }
+            if (ch == '\n') {
+                result += "\\n";
+                continue;
+            }
+            if (ch == '\t') {
+                result += "\\t";
+                continue;
+            }
+            if (ch == '\r') {
+                result += "\\r";
+                continue;
+            }
+            if (ch == '\\') {
+                result += "\\\\";
+                continue;
+            }
+            if (ch == '"') {
+                result += "\\\"";
+                continue;
+            }
+            if (ch < 0x20 || ch > 0x7E) {
+                return std::nullopt;
+            }
+            result += static_cast<char>(ch);
+        }
+
+        return std::nullopt;
+    }
+
+    std::optional<std::string> tryReadFloatLiteral(
+          const DecompileContext& context, const std::vector<GlobalMemoryRegion>& regions, const ReferencedGlobal& global)
+    {
+        if (global.sizeBytes != 4 && global.sizeBytes != 8) {
+            return std::nullopt;
+        }
+        const auto rawBits = readUnsignedGlobalValue(context, regions, global);
+        if (!rawBits.has_value()) {
+            return std::nullopt;
+        }
+
+        char buf[64];
+        if (global.sizeBytes == 4) {
+            const uint32_t bits = static_cast<uint32_t>(*rawBits);
+            float value;
+            std::memcpy(&value, &bits, 4);
+            if (!std::isfinite(value)) {
+                return std::nullopt;
+            }
+            std::snprintf(buf, sizeof(buf), "%.7g", static_cast<double>(value));
+            std::string result(buf);
+            if (result.find('.') == std::string::npos && result.find('e') == std::string::npos) {
+                result += ".0";
+            }
+            result += "f";
+            return result;
+        }
+
+        double value;
+        std::memcpy(&value, &*rawBits, 8);
+        if (!std::isfinite(value)) {
+            return std::nullopt;
+        }
+        std::snprintf(buf, sizeof(buf), "%.15g", value);
+        std::string result(buf);
+        if (result.find('.') == std::string::npos && result.find('e') == std::string::npos) {
+            result += ".0";
+        }
+        return result;
     }
 
     std::string globalTypeForSize(const size_t sizeBytes)
@@ -216,16 +319,27 @@ namespace
         return {};
     }
 
-    std::vector<std::string> renderGlobalDeclarations(
-          const DecompileContext& context, const GlobalSymbolTable& table, const std::vector<std::string>& generatedLines)
+    struct GlobalRenderResult {
+        std::vector<std::string> declarations;
+        std::unordered_map<std::string, std::string> inlineSubstitutions;
+    };
+
+    GlobalRenderResult renderGlobalDeclarations(const DecompileContext& context, const GlobalSymbolTable& table, const std::vector<std::string>& generatedLines)
     {
         const auto& regions = table.regions;
-        std::vector<std::string> declarations;
+        GlobalRenderResult output;
+        auto& declarations = output.declarations;
         const auto globals = inferGlobalDeclarations(generatedLines, table);
         declarations.reserve(globals.size() + 1);
 
         for (const auto& declaration : globals) {
             const auto& global = declaration.global;
+
+            if (global.symbol.starts_with("__imp_") || global.symbol.starts_with("__fu0_") || global.symbol.starts_with("__fu1_") ||
+                global.symbol.starts_with("_fu0_") || global.symbol.starts_with("_fu1_")) {
+                continue;
+            }
+
             if (declaration.isFunctionPointer) {
                 const auto* region = findRegionForAddress(regions, global.address);
                 std::string line   = "int (*" + global.symbol + ")(int)";
@@ -235,6 +349,20 @@ namespace
                 line += ";";
                 declarations.push_back(std::move(line));
                 continue;
+            }
+
+            if (global.isFloat) {
+                if (const auto literal = tryReadFloatLiteral(context, regions, global); literal.has_value()) {
+                    output.inlineSubstitutions[global.symbol] = *literal;
+                    continue;
+                }
+            }
+
+            if (global.sizeBytes <= 1) {
+                if (const auto str = tryReadCString(context, regions, global.address); str.has_value()) {
+                    output.inlineSubstitutions[global.symbol] = "\"" + *str + "\"";
+                    continue;
+                }
             }
 
             if (declaration.isArray) {
@@ -269,18 +397,37 @@ namespace
         if (!declarations.empty()) {
             declarations.emplace_back();
         }
-        return declarations;
+        return output;
+    }
+
+    std::string applyInlineSubstitutions(const std::string& line, const std::unordered_map<std::string, std::string>& subs)
+    {
+        std::string result = line;
+        for (const auto& [symbol, value] : subs) {
+            size_t pos = 0;
+            while (containsSymbolToken(result, symbol, pos)) {
+                result.replace(pos, symbol.size(), value);
+                pos += value.size();
+            }
+        }
+        return result;
     }
 
     bool needsSemicolon(const std::string& line)
     {
-        const auto first = std::find_if_not(line.begin(), line.end(), [](const unsigned char ch) { return std::isspace(ch) != 0; });
-        if (first == line.end()) {
+        size_t firstPos = 0;
+        while (firstPos < line.size() && std::isspace(static_cast<unsigned char>(line[firstPos])) != 0) {
+            ++firstPos;
+        }
+        if (firstPos == line.size()) {
             return false;
         }
 
-        const auto last = std::find_if_not(line.rbegin(), line.rend(), [](const unsigned char ch) { return std::isspace(ch) != 0; }).base() - 1;
-        const std::string trimmed(first, last + 1);
+        size_t lastPos = line.size() - 1;
+        while (lastPos > firstPos && std::isspace(static_cast<unsigned char>(line[lastPos])) != 0) {
+            --lastPos;
+        }
+        const std::string trimmed(line.begin() + static_cast<ptrdiff_t>(firstPos), line.begin() + static_cast<ptrdiff_t>(lastPos) + 1);
 
         if (trimmed.ends_with(';') || trimmed.ends_with('{') || trimmed == "}" || trimmed == "} else {") {
             return false;
@@ -303,18 +450,150 @@ namespace
                functionName == "_WinMain" || functionName == "wWinMain" || functionName == "_wWinMain";
     }
 
+    long long varOffset(const std::string& name)
+    {
+        if (name.size() <= 4)
+            return 0;
+        try {
+            return std::stoll(name.substr(4));
+        } catch (...) {
+            return 0;
+        }
+    }
+
+    std::string typeStringForElementSize(const uint32_t sizeBytes)
+    {
+        switch (sizeBytes) {
+        case 1:
+            return "int8_t";
+        case 2:
+            return "int16_t";
+        case 4:
+            return "int32_t";
+        case 8:
+            return "int64_t";
+        default:
+            return "int8_t";
+        }
+    }
+
+    bool isAllPrintableAscii(const std::vector<std::string>& values)
+    {
+        for (const auto& v : values) {
+            try {
+                const long long n = std::stoll(v);
+                if (n < 32 || n > 126) {
+                    return false;
+                }
+            } catch (...) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    std::string renderCharLiteral(const std::string& decimalValue)
+    {
+        const char ch = static_cast<char>(std::stoll(decimalValue));
+        if (ch == '\'')
+            return "'\\'";
+        if (ch == '\\')
+            return "'\\\\'";
+        return std::string("'") + ch + "'";
+    }
+
+    std::vector<std::string> renderLocalDeclarations(const DecompilerFunction& function)
+    {
+        std::map<long long, std::string> sorted;
+        for (const auto& [name, type] : function.baseTypes) {
+            if (!name.starts_with("var_"))
+                continue;
+            if (type.isUnknown())
+                continue;
+            sorted[varOffset(name)] = name;
+        }
+
+        std::vector<std::string> result;
+        for (const auto& region : function.stackFrame.regions) {
+            if (region.kind != StackRegionKind::Array || region.count == 0 || region.name.empty()) {
+                continue;
+            }
+            const bool hasInit        = region.initValues.size() == region.count;
+            const bool isChar         = region.elementSize == 1 && hasInit && isAllPrintableAscii(region.initValues);
+            const std::string typeStr = isChar ? "char" : typeStringForElementSize(region.elementSize);
+            if (hasInit) {
+                std::string decl = "    " + typeStr + " " + region.name + "[" + std::to_string(region.count) + "] = {";
+                for (size_t k = 0; k < region.initValues.size(); ++k) {
+                    if (k > 0)
+                        decl += ", ";
+                    decl += isChar ? renderCharLiteral(region.initValues[k]) : region.initValues[k];
+                }
+                decl += "};";
+                result.push_back(std::move(decl));
+            } else {
+                result.push_back("    " + typeStr + " " + region.name + "[" + std::to_string(region.count) + "];");
+            }
+        }
+        for (const auto& [offset, name] : sorted) {
+            const auto& type          = function.baseTypes.at(name);
+            const std::string typeStr = type.isUnknown() ? "int64_t" : type.toString();
+            result.push_back("    " + typeStr + " " + name + ";");
+        }
+        return result;
+    }
+
+    std::string typeStringForBase(const DecompilerFunction& function, const std::string& regBase)
+    {
+        const auto it = function.baseTypes.find(regBase);
+        if (it != function.baseTypes.end() && !it->second.isUnknown()) {
+            return it->second.toString();
+        }
+        return "int";
+    }
+
     std::string renderFunctionHeader(const DecompilerFunction& function)
     {
-        const std::string returnType = function.signature.returns_value ? "int" : "void";
+        std::string returnType = "void";
+        if (function.signature.returns_value) {
+            const std::string raxType = typeStringForBase(function, "rax");
+            if (raxType != "int") {
+                returnType = raxType;
+            } else {
+                const auto xmm0It = function.baseTypes.find("xmm0");
+                if (xmm0It != function.baseTypes.end() && xmm0It->second.category == TypeCategory::Float) {
+                    returnType = xmm0It->second.toString();
+                } else {
+                    returnType = raxType;
+                }
+            }
+        }
 
         std::string params;
         for (size_t p = 0; p < function.signature.parameters.size(); ++p) {
             if (p != 0) {
                 params += ", ";
             }
-            params += "int " + function.signature.parameters[p].name;
+            const std::string& paramName = function.signature.parameters[p].name;
+            std::string paramType;
+
+            const auto argIt = function.baseTypes.find(paramName);
+            if (argIt != function.baseTypes.end() && !argIt->second.isUnknown()) {
+                paramType = argIt->second.toString();
+            } else {
+                const std::string regBase = registerBaseForArgumentIndex(p);
+                paramType                 = typeStringForBase(function, regBase);
+                if (paramType == "int") {
+                    const std::string xmmBase = "xmm" + std::to_string(p);
+                    const auto xmmIt          = function.baseTypes.find(xmmBase);
+                    if (xmmIt != function.baseTypes.end() && xmmIt->second.category == TypeCategory::Float) {
+                        paramType = xmmIt->second.toString();
+                    }
+                }
+            }
+            params += paramType + " " + paramName;
         }
-        std::string name    = llvm::demangle(function.name);
+
+        std::string name    = ASTDetail::stripReturnType(llvm::demangle(function.name));
         const auto parenPos = name.find('(');
         if (parenPos != std::string::npos) {
             name = name.substr(0, parenPos);
@@ -352,7 +631,13 @@ namespace
         }
 
         if (isRuntimeReachabilityStop(entryIt->name)) {
-            const auto userEntryIt = std::ranges::find_if(functions, [](const DecompilerFunction& function) { return isUserEntryPointName(function.name); });
+            auto userEntryIt = functions.end();
+            for (auto it = functions.begin(); it != functions.end(); ++it) {
+                if (isUserEntryPointName(it->name)) {
+                    userEntryIt = it;
+                    break;
+                }
+            }
             if (userEntryIt != functions.end()) {
                 entryIt = userEntryIt;
             }
@@ -386,7 +671,7 @@ namespace
                 if (!IRProperties::isCall(instruction.type)) {
                     continue;
                 }
-                const auto target = parseAddressOperand(IRProperties::operandAt(instruction, 0).value);
+                const auto target = parseAddressOperand(IRProperties::operandAt(instruction, 0).name);
                 if (target.has_value() && functionByAddress.contains(*target)) {
                     if (isRuntimeReachabilityStop(functionByAddress.at(*target)->name)) {
                         continue;
@@ -419,7 +704,13 @@ std::vector<std::string> showFunctions(DecompilerProgram& program)
 
     for (size_t i = 0; i < selectedFunctions.size(); ++i) {
         const auto& function = *selectedFunctions[i];
+        if (function.isThunk) {
+            continue;
+        }
         result.push_back(renderFunctionHeader(function));
+
+        const auto localDecls = renderLocalDeclarations(function);
+        result.insert(result.end(), localDecls.begin(), localDecls.end());
 
         if (function.ast.empty()) {
             bool hasReturn = false;
@@ -437,7 +728,7 @@ std::vector<std::string> showFunctions(DecompilerProgram& program)
         } else {
             for (const auto& node : function.ast) {
                 for (const auto& line : node->print(0)) {
-                    const std::string normalizedLine = substituteArgumentRegisters(line, function.signature, function.calling_convention);
+                    const std::string normalizedLine = substituteArgumentRegisters(line, function.signature);
                     result.push_back("    " + normalizedLine + (needsSemicolon(normalizedLine) ? ";" : ""));
                 }
             }
@@ -449,8 +740,13 @@ std::vector<std::string> showFunctions(DecompilerProgram& program)
         }
     }
 
-    const auto declarations = renderGlobalDeclarations(program.context, program.globals, result);
-    result.insert(result.begin(), declarations.begin(), declarations.end());
+    const auto renderResult = renderGlobalDeclarations(program.context, program.globals, result);
+    if (!renderResult.inlineSubstitutions.empty()) {
+        for (auto& line : result) {
+            line = applyInlineSubstitutions(line, renderResult.inlineSubstitutions);
+        }
+    }
+    result.insert(result.begin(), renderResult.declarations.begin(), renderResult.declarations.end());
 
     return result;
 }

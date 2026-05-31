@@ -17,7 +17,7 @@ bool Decompiler::Optimizations::propagateOnce(Graph& cfg)
                 continue;
             }
 
-            const std::string destName = instruction.operands[0].value;
+            const std::string destName = instruction.operands[0].name;
             const size_t uses          = countUsesOfName(cfg, destName);
 
             if (uses == 0) {
@@ -45,12 +45,12 @@ bool Decompiler::Optimizations::canPropagate(const IRInstruction& instruction)
         return false;
     }
     const auto& src = instruction.operands[1];
-    if (src.type != OpType::REG && src.type != OpType::IMM) {
+    if (src.tag != OperandTag::Register && src.tag != OperandTag::Immediate) {
         return false;
     }
 
     const auto& dest = IRProperties::operandAt(instruction, 0);
-    if (dest.type != OpType::REG || dest.kind != OperandKind::SsaTemp) {
+    if (dest.tag != OperandTag::SsaTemp) {
         return false;
     }
 
@@ -67,7 +67,7 @@ size_t Decompiler::Optimizations::countUsesOfName(const Graph& cfg, const std::s
                 continue;
             }
             for (size_t index = 0; index < instruction.operands.size(); ++index) {
-                if (IRProperties::usesOperandAt(instruction, index) && instruction.operands[index].value == name) {
+                if (IRProperties::usesOperandAt(instruction, index) && instruction.operands[index].name == name) {
                     ++count;
                 }
             }
@@ -81,7 +81,7 @@ bool Decompiler::Optimizations::replaceFirstUseOfName(Graph& cfg, const std::str
     for (auto& block : cfg.blocks) {
         for (auto& instruction : block.instructions) {
             for (size_t index = 0; index < instruction.operands.size(); ++index) {
-                if (IRProperties::usesOperandAt(instruction, index) && instruction.operands[index].value == name) {
+                if (IRProperties::usesOperandAt(instruction, index) && instruction.operands[index].name == name) {
                     instruction.operands[index] = replacement;
                     return true;
                 }

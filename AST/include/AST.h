@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "ASTExpression.h"
-#include "IRTypes.h"
+#include "IRInstruction.h"
 
 namespace Decompiler
 {
@@ -25,7 +25,7 @@ struct SimpleBlockNode : ASTNode {
     std::vector<std::string> print(int indent) const override;
 };
 
-std::vector<std::unique_ptr<ASTNode>> lowerBlockToStatements(const std::vector<IRInstruction>& instructions, CallingConvention callingConvention);
+std::vector<std::unique_ptr<ASTNode>> lowerBlockToStatements(const std::vector<IRInstruction>& instructions);
 
 struct AssignmentNode : ASTNode {
     std::unique_ptr<Expression> target;
@@ -112,7 +112,6 @@ std::vector<std::unique_ptr<ASTNode>> build_ast(
       const std::vector<size_t>& postdoms,
       size_t current_block,
       size_t stop_block,
-      size_t continue_target               = static_cast<size_t>(-1),
-      size_t break_target                  = static_cast<size_t>(-1),
-      CallingConvention calling_convention = CallingConvention::Unknown);
+      size_t continue_target = static_cast<size_t>(-1),
+      size_t break_target    = static_cast<size_t>(-1));
 } // namespace Decompiler
