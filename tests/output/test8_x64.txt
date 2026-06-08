@@ -1,0 +1,349 @@
+uint64_t GLOBAL_S = 5368725512;
+uint8_t global_rdata_1400041a4 = 248;
+uint8_t global_rdata_140004348 = 8;
+uint64_t _refptr__MINGW_INSTALL_DEBUG_MATHERR = 5368721488;
+uint64_t _refptr___CTOR_LIST__ = 5368727944;
+uint64_t _refptr___ImageBase = 5368709120;
+uint64_t _refptr___RUNTIME_PSEUDO_RELOC_LIST_END__ = 5368727944;
+uint64_t _refptr___RUNTIME_PSEUDO_RELOC_LIST__ = 5368727920;
+uint64_t _refptr___dyn_tls_init_callback = 5368725536;
+uint64_t _refptr___globallocalestatus = 5368721456;
+uint64_t _refptr___imp___initenv = 5368721568;
+uint64_t _refptr___mingw_app_type = 5368737936;
+uint64_t _refptr___mingw_initltsdrot_force = 5368737912;
+uint64_t _refptr___mingw_initltsdyn_force = 5368737908;
+uint64_t _refptr___mingw_initltssuo_force = 5368737904;
+uint64_t _refptr___mingw_oldexcpt_handler = 5368738000;
+uint64_t _refptr___native_startup_lock = 5368737856;
+uint64_t _refptr___native_startup_state = 5368737864;
+uint64_t _refptr___xc_a = 5368727984;
+uint64_t _refptr___xc_z = 5368727992;
+uint64_t _refptr___xi_a = 5368728000;
+uint64_t _refptr___xi_z = 5368728008;
+uint64_t _refptr__commode = 5368737920;
+uint64_t _refptr__dowildcard = 5368737872;
+uint64_t _refptr__fmode = 5368737984;
+uint64_t _refptr__newmode = 5368737888;
+uint8_t __xd_z = 0;
+int32_t has_cctor = 0;
+int32_t managedapp = 0;
+uint64_t envp = 0;
+uint64_t argv = 0;
+int32_t argc = 0;
+int32_t initialized = 0;
+int32_t was_init_0 = 0;
+int32_t maxSections = 0;
+uint64_t the_secs = 0;
+uint64_t stUserMathErr = 0;
+uint64_t __mingw_oldexcpt_handler = 0;
+uint64_t key_dtor_list = 0;
+int32_t __mingwthr_cs_init = 0;
+uint8_t __mingwthr_cs = 0;
+int (*fthunk)(int);
+int (*fthunk)(int);
+int (*fthunk)(int);
+int (*fthunk)(int);
+int (*fthunk)(int);
+int (*fthunk)(int);
+int (*fthunk)(int);
+int (*fthunk)(int);
+
+void __mingw_invalidParameterHandler() {
+}
+
+void safe_flush() {
+}
+
+void __tmainCRTStartup() {
+    int32_t var_0;
+    void* var_32;
+    int64_t var_60;
+    int32_t var_76;
+}
+
+void mainCRTStartup() {
+    *_refptr___mingw_app_type = 0;
+}
+
+int64_t main() {
+    int32_t var_4;
+    int32_t var_8;
+    var_4 = 2147483637;
+    var_8 = -2147483638;
+    std::operator<<<std::char_traits<char> >(__fu0__ZSt4cout, GLOBAL_S);
+    std::operator<<<std::char_traits<char> >(__fu0__ZSt4cout, "wow");
+    return 0;
+}
+
+void __do_global_ctors() {
+}
+
+void __main() {
+    while (initialized == 0) {
+        initialized = 1;
+    }
+}
+
+int _setargv() {
+    return 0;
+}
+
+void* __dyn_tls_dtor(void* arg_0, int arg_1) {
+    void* var_40;
+    if (arg_1 == 3) {
+        if (arg_1 == 2) {
+            fpreset();
+            return 1;
+        }
+    } else {
+        if (arg_1 == 0) {
+            if (arg_1 == 2) {
+                fpreset();
+                return 1;
+            }
+        }
+    }
+}
+
+void sub_140001650() {
+}
+
+void sub_140001690() {
+}
+
+void _matherr() {
+    double var_32;
+    double var_40;
+    double var_48;
+    float var_64;
+    float var_80;
+    float var_96;
+    var_64 = xmm6_0;
+    var_80 = xmm7_0;
+    var_96 = xmm8_0;
+}
+
+void sub_140001750() {
+}
+
+void* __report_error(void* arg_0, void* arg_1, void* arg_2, void* arg_3) {
+    void* var_8_qword;
+    void* var_32_qword;
+    void* var_40;
+    float var_48;
+    int32_t var_56;
+    double var_64;
+    int32_t var_68;
+    int64_t var_88;
+    int64_t var_96;
+    void* var_104;
+    double var_128;
+    var_96 = arg_2;
+    var_104 = arg_3;
+    var_88 = arg_1;
+    var_40 = var_88;
+    fprintf(fthunk(2), "Mingw-w64 runtime failure:\n");
+    vfprintf(fthunk(2), arg_0, var_40);
+}
+
+void __mingw_setusermatherr(int64_t arg_0) {
+    stUserMathErr = arg_0;
+}
+
+int sub_140001e10() {
+    return 0;
+}
+
+void sub_140001fe0() {
+    if ((unsigned)(rax_0) > (unsigned)(0xc0000096)) {
+        if (__mingw_oldexcpt_handler == 0) {
+        }
+    } else {
+        if ((unsigned)(rax_0) <= (unsigned)(0xc000008b)) {
+            if (rax_0 == 0xc0000005) {
+                if (signal(11, 0) != 1) {
+                    if (rax_7 == 0) {
+                        if (__mingw_oldexcpt_handler == 0) {
+                        }
+                    }
+                }
+            }
+        } else {
+            if ((unsigned)(rax_0 + 1073741683) > (unsigned)(9)) {
+            }
+        }
+    }
+}
+
+void sub_140002000() {
+}
+
+void __mingwthr_run_key_dtors_part_0() {
+    if (key_dtor_list != 0) {
+    }
+}
+
+int64_t sub_140002150(void* arg_0, int64_t arg_1, int64_t arg_2, int32_t arg_3) {
+    int64_t var_40;
+    int32_t var_64;
+    int64_t var_72;
+    return 0;
+}
+
+int64_t sub_1400021d8(void* arg_0) {
+    int32_t var_48;
+    var_48 = arg_0;
+    if (key_dtor_list != 0) {
+    }
+    __imp_LeaveCriticalSection(__mingwthr_cs);
+    return 0;
+}
+
+void fpreset() {
+}
+
+int _ValidateImageBase(int arg_0) {
+    return 0;
+}
+
+int _FindPESection(void* arg_0, uint arg_1) {
+    return;
+}
+
+void _FindPESectionByName(void* arg_0) {
+    int8_t arr_24[1];
+    if ((unsigned)(fthunk()) <= (unsigned)(8)) {
+        return _refptr___ImageBase;
+    }
+}
+
+int16_t __mingw_GetSectionForAddress(uint arg_0) {
+    return 0;
+}
+
+int64_t __mingw_GetSectionCount() {
+}
+
+int16_t _FindPESectionExec(int arg_0) {
+    return 0;
+}
+
+int64_t _GetPEImageBase() {
+}
+
+uint16_t _IsNonwritableInCurrentImage(uint arg_0) {
+    return 0;
+}
+
+uint32_t __mingw_enum_import_library_names(int arg_0) {
+}
+
+void sub_140002760(void* arg_0) {
+}
+
+void vfprintf(int64_t arg_0, int arg_1, int64_t arg_2) {
+    int64_t var_32;
+    __local_stdio_printf_options();
+    var_32 = arg_2;
+}
+
+void fprintf(int64_t arg_0, int arg_1, int64_t arg_2, int64_t arg_3) {
+    void* var_32;
+    void* var_56;
+    int64_t var_112;
+    int64_t var_120;
+    var_112 = arg_2;
+    var_120 = arg_3;
+    var_56 = var_112;
+    __local_stdio_printf_options(var_112, arg_2, arg_3);
+    var_32 = var_112;
+}
+
+void* __local_stdio_printf_options() {
+}
+
+int64_t __p___initenv() {
+    return *_refptr___imp___initenv;
+}
+
+int32_t _amsg_exit(int32_t arg_0, void* arg_1, int64_t arg_2, int64_t arg_3) {
+    int64_t var_112;
+    fprintf(fthunk(2), "runtime error %d\n", arg_0);
+    _exit(255);
+    _initialize_narrow_environment();
+    _configure_narrow_argv(1);
+    fthunk();
+    *255 = *fthunk();
+    __p___argv();
+    *"runtime error %d\n" = *__p___argv();
+    fthunk();
+    *arg_0 = *fthunk();
+    fthunk(*var_112);
+}
+
+void strncmp() {
+}
+
+void __p__commode() {
+}
+
+void __p__fmode() {
+}
+
+void __stdio_common_vfprintf() {
+}
+
+void setvbuf() {
+}
+
+void __p___argv() {
+}
+
+void _cexit() {
+}
+
+void _configure_narrow_argv() {
+}
+
+int _crt_atexit() {
+}
+
+void _exit() {
+}
+
+void _initialize_narrow_environment() {
+}
+
+void _initterm() {
+}
+
+void _initterm_e() {
+}
+
+void __set_app_type() {
+}
+
+void _set_invalid_parameter_handler() {
+}
+
+void abort() {
+}
+
+void exit() {
+}
+
+void signal() {
+}
+
+void memcpy() {
+}
+
+void calloc() {
+}
+
+void free() {
+}
+
+int malloc() {
+}
+
