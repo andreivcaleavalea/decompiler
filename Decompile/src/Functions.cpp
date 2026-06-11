@@ -129,6 +129,39 @@ namespace
         return lhs.start_address < rhs.start_address;
     }
 
+    void claimFunctionFromSeed(
+          const std::vector<IRInstruction>& irs,
+          const std::unordered_map<uint64_t, size_t>& addressToIndex,
+          std::unordered_set<uint64_t>& allSeeds,
+          std::vector<int>& ownerByInstruction,
+          std::vector<RawFunction>& functions,
+          int& functionId,
+          const uint64_t seed)
+    {
+        auto indices = discoverFunctionInstructionIndices(irs, addressToIndex, allSeeds, seed);
+        std::vector<size_t> ownedIndices;
+        ownedIndices.reserve(indices.size());
+
+        for (const auto index : indices) {
+            if (ownerByInstruction[index] != -1)
+                continue;
+            ownerByInstruction[index] = functionId;
+            ownedIndices.push_back(index);
+        }
+
+        if (ownedIndices.empty())
+            return;
+
+        RawFunction function;
+        function.start_address = seed;
+        function.instructions.reserve(ownedIndices.size());
+        for (const auto index : ownedIndices) {
+            function.instructions.push_back(irs[index]);
+        }
+        functions.push_back(std::move(function));
+        ++functionId;
+    }
+
     std::vector<RawFunction> discoverFunctionBodies(const std::vector<IRInstruction>& irs)
     {
         std::vector<RawFunction> functions;
@@ -137,38 +170,22 @@ namespace
         }
 
         const auto addressToIndex = buildAddressIndex(irs);
-        const auto seeds          = collectFunctionSeeds(irs, addressToIndex);
-        const std::unordered_set<uint64_t> allSeeds(seeds.begin(), seeds.end());
+        const auto initialSeeds   = collectFunctionSeeds(irs, addressToIndex);
+        std::unordered_set<uint64_t> allSeeds(initialSeeds.begin(), initialSeeds.end());
 
         std::vector<int> ownerByInstruction(irs.size(), -1);
         int functionId = 0;
 
-        for (const auto seed : seeds) {
-            auto indices = discoverFunctionInstructionIndices(irs, addressToIndex, allSeeds, seed);
-            std::vector<size_t> ownedIndices;
-            ownedIndices.reserve(indices.size());
+        for (const auto seed : initialSeeds) {
+            claimFunctionFromSeed(irs, addressToIndex, allSeeds, ownerByInstruction, functions, functionId, seed);
+        }
 
-            for (const auto index : indices) {
-                if (ownerByInstruction[index] != -1) {
-                    continue;
-                }
-                ownerByInstruction[index] = functionId;
-                ownedIndices.push_back(index);
-            }
-
-            if (ownedIndices.empty()) {
+        for (size_t i = 0; i < irs.size(); ++i) {
+            if (ownerByInstruction[i] != -1)
                 continue;
-            }
-
-            RawFunction function;
-            function.start_address = seed;
-            function.instructions.reserve(ownedIndices.size());
-            for (const auto index : ownedIndices) {
-                function.instructions.push_back(irs[index]);
-            }
-
-            functions.push_back(std::move(function));
-            ++functionId;
+            const uint64_t newSeed = irs[i].address;
+            allSeeds.insert(newSeed);
+            claimFunctionFromSeed(irs, addressToIndex, allSeeds, ownerByInstruction, functions, functionId, newSeed);
         }
 
         std::sort(functions.begin(), functions.end(), rawFunctionByAddress);

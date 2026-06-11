@@ -692,6 +692,40 @@ namespace
     }
 } // namespace
 
+static std::vector<std::string> renderFunctionLines(const DecompilerFunction& function)
+{
+    std::vector<std::string> lines;
+    lines.push_back(renderFunctionHeader(function));
+
+    const auto localDecls = renderLocalDeclarations(function);
+    lines.insert(lines.end(), localDecls.begin(), localDecls.end());
+
+    if (function.ast.empty()) {
+        bool hasReturn = false;
+        for (const auto& instruction : function.instructions) {
+            if (IRProperties::isReturn(instruction.type)) {
+                hasReturn = true;
+                break;
+            }
+        }
+        if (hasReturn && function.signature.returns_value) {
+            lines.push_back("    return 0;");
+        } else if (!hasReturn) {
+            lines.push_back("    /* no high-level statements recovered */");
+        }
+    } else {
+        for (const auto& node : function.ast) {
+            for (const auto& line : node->print(0)) {
+                const std::string normalizedLine = substituteArgumentRegisters(line, function.signature);
+                lines.push_back("    " + normalizedLine + (needsSemicolon(normalizedLine) ? ";" : ""));
+            }
+        }
+    }
+
+    lines.push_back("}");
+    return lines;
+}
+
 std::vector<std::string> showFunctions(DecompilerProgram& program)
 {
     const auto selectedFunctions = program.context.onlyEntryPointReachable
@@ -703,38 +737,8 @@ std::vector<std::string> showFunctions(DecompilerProgram& program)
     std::vector<std::string> result;
 
     for (size_t i = 0; i < selectedFunctions.size(); ++i) {
-        const auto& function = *selectedFunctions[i];
-        if (function.isThunk) {
-            continue;
-        }
-        result.push_back(renderFunctionHeader(function));
-
-        const auto localDecls = renderLocalDeclarations(function);
-        result.insert(result.end(), localDecls.begin(), localDecls.end());
-
-        if (function.ast.empty()) {
-            bool hasReturn = false;
-            for (const auto& instruction : function.instructions) {
-                if (IRProperties::isReturn(instruction.type)) {
-                    hasReturn = true;
-                    break;
-                }
-            }
-            if (hasReturn && function.signature.returns_value) {
-                result.push_back("    return 0;");
-            } else if (!hasReturn) {
-                result.push_back("    /* no high-level statements recovered */");
-            }
-        } else {
-            for (const auto& node : function.ast) {
-                for (const auto& line : node->print(0)) {
-                    const std::string normalizedLine = substituteArgumentRegisters(line, function.signature);
-                    result.push_back("    " + normalizedLine + (needsSemicolon(normalizedLine) ? ";" : ""));
-                }
-            }
-        }
-
-        result.push_back("}");
+        const auto lines = renderFunctionLines(*selectedFunctions[i]);
+        result.insert(result.end(), lines.begin(), lines.end());
         if (i + 1 < selectedFunctions.size()) {
             result.emplace_back();
         }
@@ -749,5 +753,38 @@ std::vector<std::string> showFunctions(DecompilerProgram& program)
     result.insert(result.begin(), renderResult.declarations.begin(), renderResult.declarations.end());
 
     return result;
+}
+
+RenderedProgram showFunctionsPerFunction(DecompilerProgram& program)
+{
+    const auto selectedFunctions = program.context.onlyEntryPointReachable
+                                         ? filterEntryPointReachableFunctions(program.functions, program.context.entryPointAddress)
+                                         : allFunctionPointers(program.functions);
+
+    Optimizations::removeUnusedGlobals(program.globals, selectedFunctions);
+
+    std::vector<std::string> allLines;
+    RenderedProgram output;
+
+    for (const auto* fp : selectedFunctions) {
+        RenderedFunction rendered;
+        rendered.startAddress = fp->start_address;
+        rendered.lines        = renderFunctionLines(*fp);
+        allLines.insert(allLines.end(), rendered.lines.begin(), rendered.lines.end());
+        output.functions.push_back(std::move(rendered));
+    }
+
+    const auto renderResult = renderGlobalDeclarations(program.context, program.globals, allLines);
+
+    if (!renderResult.inlineSubstitutions.empty()) {
+        for (auto& rendered : output.functions) {
+            for (auto& line : rendered.lines) {
+                line = applyInlineSubstitutions(line, renderResult.inlineSubstitutions);
+            }
+        }
+    }
+
+    output.globalDeclarations = renderResult.declarations;
+    return output;
 }
 } // namespace Decompiler

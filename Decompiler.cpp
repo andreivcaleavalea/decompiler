@@ -89,4 +89,56 @@ std::string DecompileToString(const std::vector<AssemblyInstruction>& input, con
 
     return text;
 }
+
+DecompiledProgramOutput DecompileFunctions(const std::vector<AssemblyInstruction>& input, const DecompileContext& context)
+{
+    const auto irs = transformASMToIR(input);
+    if (irs.empty()) {
+        return {};
+    }
+
+    DecompilerProgram program;
+    program.context    = context;
+    const bool is64Bit = context.subformat != BinarySubformat::PE32;
+    program.functions  = findFunctions(irs, is64Bit);
+
+    if (program.functions.empty()) {
+        return {};
+    }
+
+    Symbols::ResolvedSymbols symbols;
+    if (context.format == BinaryFormat::PE) {
+        symbols = Symbols::resolveCOFFSymbols(context.sections, context.coffSymbols);
+        Symbols::applyFunctionSymbols(program.functions, symbols);
+        resolveThunks(program.functions, symbols.globals);
+    }
+
+    const auto functionNames = functionNamesByAddress(program.functions);
+    program.globals          = buildGlobalSymbolTable(context, symbols.globals);
+
+    for (auto& function : program.functions) {
+        buildFunctionIR(function, program, functionNames);
+    }
+
+    const auto userSignatures = buildUserSignatureMap(program.functions);
+    for (auto& function : program.functions) {
+        refineInterProceduralTypes(function, userSignatures);
+    }
+
+    Optimizations::runAll(program);
+
+    for (auto& function : program.functions) {
+        buildFunctionAST(function);
+    }
+
+    const auto rendered = showFunctionsPerFunction(program);
+
+    DecompiledProgramOutput result;
+    result.globalDeclarations = rendered.globalDeclarations;
+    result.functions.reserve(rendered.functions.size());
+    for (const auto& r : rendered.functions) {
+        result.functions.push_back({ r.startAddress, r.lines });
+    }
+    return result;
+}
 } // namespace Decompiler
